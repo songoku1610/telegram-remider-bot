@@ -137,6 +137,7 @@ Nội dung lúc/at/vào <thời gian> [<tần suất>]
 | Giờ đơn giản | `14h`, `14:30`, `14.30`, `2h chiều` |
 | Hôm nay / ngày mai | `lúc 9h hôm nay`, `lúc 8h mai` |
 | Thứ trong tuần | `Thứ 4 14h`, `T4, 14.00`, `T4-14h` |
+| **Giờ trước, thứ sau** | `10h T3 Họp với đối tác`, `14h30 T5 Nộp báo cáo` |
 | Thứ viết tắt | `T2` → `T7`, `Chủ nhật` |
 | Ngày cụ thể | `02/05/2026 8h` |
 | Thời gian tương đối | `30 phút nữa`, `2 giờ nữa` |
@@ -173,6 +174,8 @@ Hỗ trợ cả dạng `lặp lại mỗi N ...` và tiếng Anh `every N days/w
 ```
 Họp với team lúc 3h chiều hàng ngày
 T4, 14.00 Họp rà soát kế hoạch
+10h T3 Họp với đối tác
+14h30 T5 Nộp báo cáo hàng tuần
 Làm dự toán vào 8h ngày 02/05/2026 hàng tháng
 Khám định kỳ lúc 9h ngày 15/07/2026 mỗi 6 tháng
 Uống thuốc lúc 8h hôm nay mỗi 3 ngày

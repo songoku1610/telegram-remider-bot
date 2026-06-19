@@ -589,6 +589,27 @@ def parse_message_timefirst(text):
         first_line = lines[0]
         extra_lines = lines[1:]
 
+        # Dạng: "{giờ} {thứ} {nội dung}" - VD: "10h T3 Họp với đối tác"
+        m_tw = re.match(
+            r"^(\d{1,2}(?:h\d{0,2}|[.:]\d{1,2}))\s+(thứ\s*[2-7]|t[2-7]|chủ nhật)\s+(.+)$",
+            first_line,
+            re.IGNORECASE,
+        )
+        if m_tw:
+            time_text = m_tw.group(1)
+            weekday_text = m_tw.group(2)
+            message = m_tw.group(3).strip()
+            if extra_lines:
+                message = message + "\n" + "\n".join(extra_lines)
+            time_part = f"{weekday_text} {time_text}"
+            remind_time = parse_time(time_part)
+            if not remind_time:
+                return None
+            print("time-weekday-first parse:", message, "time part:", time_part, "remind_time:", remind_time, flush=True)
+            remind_before = timedelta(minutes=15)
+            remind_time -= remind_before
+            return message, remind_time, repeat_type or "none"
+
         # Dạng: "14.00 nội dung..." hoặc "Thứ 4, 14.00 nội dung..."
         m = re.match(
             r"^(?:(thứ\s*[2-7]|t[2-7]|chủ nhật)\s*[,\-]?\s*)?(\d{1,2}(?:[.:h]\d{1,2})?)\s+(.*)$",
@@ -630,6 +651,7 @@ async def send_help(update: Update):
             "   • <code>14.00 Nội dung</code>\n"
             "   • <code>Thứ 4, 14.00 Nội dung</code>\n"
             "   • <code>T4 14.00 Nội dung</code>  |  <code>T4, 14.00 Nội dung</code>  |  <code>T4-14.00 Nội dung</code>\n"
+            "   • <code>10h T3 Nội dung</code>  — giờ trước, thứ sau (VD: <code>10h T3 Họp với đối tác</code>)\n"
             "   Hỗ trợ T2 T3 T4 T5 T6 T7 và Thứ 2 … Thứ 7\n"
             "   Nếu không nhập giờ, mặc định nhắc lúc <b>9:00</b>\n\n"
             "   <b>Tần suất lặp cố định:</b> <code>hàng ngày</code> | <code>hàng tuần</code> | <code>hàng tháng</code> | <code>hàng năm</code>\n"
