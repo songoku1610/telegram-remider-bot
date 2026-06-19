@@ -1,0 +1,1 @@
+pip install python-telegram-bot mysql-connector-python python-dotenv
