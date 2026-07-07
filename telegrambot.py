@@ -286,6 +286,29 @@ WEEKDAY_MAP = {
     "t7": 5,
 }
 
+_MULTI_WEEKDAY_MAP = {
+    "thứ 2": 0, "thứ2": 0, "t2": 0,
+    "thứ 3": 1, "thứ3": 1, "t3": 1,
+    "thứ 4": 2, "thứ4": 2, "t4": 2,
+    "thứ 5": 3, "thứ5": 3, "t5": 3,
+    "thứ 6": 4, "thứ6": 4, "t6": 4,
+    "thứ 7": 5, "thứ7": 5, "t7": 5,
+    "chủ nhật": 6, "chủnhật": 6,
+}
+
+_WEEKDAY_MULTI_RE = re.compile(
+    r'\b(thứ\s*[2-7]|chủ\s*nhật|t[2-7])\b',
+    re.IGNORECASE,
+)
+
+
+def _tok_to_weekday(tok):
+    """Chuyển weekday token → int (Thứ 2=0 … Chủ nhật=6) hoặc None."""
+    t = re.sub(r'\s+', ' ', tok.strip().lower())
+    if t in _MULTI_WEEKDAY_MAP:
+        return _MULTI_WEEKDAY_MAP[t]
+    return _MULTI_WEEKDAY_MAP.get(re.sub(r'\s+', '', t))
+
 
 # =========================
 # NORMALIZE
@@ -333,6 +356,21 @@ WEEKDAY_VI = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", 
 
 def weekday_vi(dt: datetime) -> str:
     return WEEKDAY_VI[dt.weekday()]
+
+
+def get_default_remind_time() -> datetime:
+    """Thời gian nhắc mặc định khi không xác định được thời gian:
+    - Trước 9h  → 9h hôm nay
+    - 9h–16h    → 16h hôm nay
+    - Sau 16h   → 9h sáng hôm sau
+    """
+    now = datetime.now()
+    if now.hour < 9:
+        return now.replace(hour=9, minute=0, second=0, microsecond=0)
+    elif now.hour < 16:
+        return now.replace(hour=16, minute=0, second=0, microsecond=0)
+    else:
+        return (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
 
 # =========================
 # EXTRACT TIME (xịn)
@@ -547,13 +585,35 @@ def parse_message(text):
                 repeat_type = normalize_repeat(repeat_match.group(2))
                 text = text.replace(repeat_match.group(0), "")
 
-        parts = re.split(r"\s(at|lúc|luc|vao|vào|@)\s", text, maxsplit=1, flags=re.IGNORECASE)
+        _SEP_RE = re.compile(r"\s(at|lúc|luc|vao|vào|@)\s", re.IGNORECASE)
+
+        # Thử tách từ separator phải nhất sang trái để lấy đúng phần thời gian
+        # VD: "Hôm đó vào một ngày đẹp trời, đi hóng mát vào 17h T2"
+        #     → tách trên "vào" cuối → message = "Hôm đó vào một ngày đẹp trời, đi hóng mát"
+        _sep_matches = list(_SEP_RE.finditer(text))
+        parts = []
+        for _sm in reversed(_sep_matches):
+            _candidate_time = text[_sm.end():].strip()
+            _candidate_msg  = text[:_sm.start()].strip()
+            if _candidate_msg and (parse_time(_candidate_time) or parse_time_new(_candidate_time)):
+                parts = [_candidate_msg, _sm.group(1), _candidate_time]
+                break
+        if not parts:
+            parts = _SEP_RE.split(text, maxsplit=1)
 
         # Xử lý edge case: sau khi strip repeat, separator lúc/at/vào còn đứng đầu text
         if len(parts) < 3:
             text2 = re.sub(r"^(?:lúc|luc|vào|vao|at)\s+", "", text.strip(), flags=re.IGNORECASE)
             if text2 != text:
-                parts = re.split(r"\s(at|lúc|luc|vao|vào|@)\s", text2, maxsplit=1, flags=re.IGNORECASE)
+                _sep_matches2 = list(_SEP_RE.finditer(text2))
+                for _sm in reversed(_sep_matches2):
+                    _candidate_time = text2[_sm.end():].strip()
+                    _candidate_msg  = text2[:_sm.start()].strip()
+                    if _candidate_msg and (parse_time(_candidate_time) or parse_time_new(_candidate_time)):
+                        parts = [_candidate_msg, _sm.group(1), _candidate_time]
+                        break
+                if len(parts) < 3:
+                    parts = _SEP_RE.split(text2, maxsplit=1)
                 if len(parts) < 3:
                     text = text2  # cập nhật text cho timefirst fallback
 
@@ -565,7 +625,7 @@ def parse_message(text):
 
         message = parts[0].strip()
         time_part = parts[2].strip()
-        remind_time =  parse_time(time_part) or parse_time_new(time_part)
+        remind_time = parse_time(time_part) or parse_time_new(time_part)
         if not remind_time:
             result = parse_message_timefirst(text)
             if result and repeat_type != "none":
@@ -639,6 +699,152 @@ def parse_message_timefirst(text):
     except Exception as e:
         print("PARSE ERROR:", e, flush=True)
         return None
+
+
+# =========================
+# MULTI-SCHEDULE PARSER
+# =========================
+def parse_multi_reminder(original_text):
+    """
+    Parse câu lệnh chứa nhiều thứ trong tuần (T2,T4,T6) hoặc nhiều ngày.
+    Trả về list[(message, remind_time, repeat_type)] nếu ≥2 thời điểm, else None.
+    """
+    text = normalize(original_text)
+
+    if LUNAR_KEYWORDS_RE.search(text):
+        return None
+
+    # 1. Tách repeat type
+    repeat_type = "none"
+    _custom, text = extract_custom_repeat(text)
+    if _custom:
+        repeat_type = _custom
+    else:
+        repeat_match = re.search(
+            r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|"
+            r"hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly)",
+            text, re.IGNORECASE,
+        )
+        if repeat_match:
+            repeat_type = normalize_repeat(repeat_match.group(2))
+            text = text.replace(repeat_match.group(0), "").strip()
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # 2. Tách message / time_and_days qua separator lúc/vào/at
+    parts = re.split(r"\s(?:at|lúc|luc|vào|vao|@)\s", text, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) >= 2:
+        message_part = parts[0].strip()
+        time_and_days = parts[1].strip()
+    else:
+        message_part = None
+        time_and_days = text
+
+    def _strip_time(s):
+        s = re.sub(
+            r'\b\d{1,2}(?:[:.h]\d{0,2})?\s*(?:giờ(?:\s*\d{1,2})?)?\s*(?:sáng|chiều|tối)?\b',
+            ' ', s, flags=re.IGNORECASE,
+        )
+        s = re.sub(r'\b(?:lúc|luc|vào|vao|at)\b', ' ', s, flags=re.IGNORECASE)
+        return re.sub(r'\s+', ' ', s).strip()
+
+    # 3a. Nhiều thứ trong tuần (VD: T2, T4, T6)
+    wd_tokens = _WEEKDAY_MULTI_RE.findall(time_and_days)
+    weekday_ints = []
+    seen_wd = set()
+    for tok in wd_tokens:
+        d = _tok_to_weekday(tok)
+        if d is not None and d not in seen_wd:
+            seen_wd.add(d)
+            weekday_ints.append(d)
+
+    if len(weekday_ints) >= 2:
+        time_clean = _WEEKDAY_MULTI_RE.sub(' ', time_and_days)
+        time_clean = re.sub(r',\s*', ' ', time_clean)
+        time_clean = re.sub(r'\s+', ' ', time_clean).strip()
+        hour, minute = extract_time(time_clean) if re.search(r'\d', time_clean) else (9, 0)
+        msg = message_part if message_part else _strip_time(time_clean)
+        if not msg:
+            return None
+        now = datetime.now()
+        results = []
+        for wd in weekday_ints:
+            dt = get_weekday(now, wd, 0)
+            dt = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if dt <= now:
+                dt += timedelta(days=7)
+            results.append((msg, dt, repeat_type))
+        return results
+
+    # 3b. Nhiều ngày dạng DD/MM (VD: ngày 20/6, 25/7)
+    ddmm_list = re.findall(r'\b(\d{1,2})/(\d{1,2})\b', time_and_days)
+    if len(ddmm_list) >= 2:
+        time_clean = re.sub(r'\b\d{1,2}/\d{1,2}\b', ' ', time_and_days)
+        time_clean = re.sub(r'\b(?:ngày|ngay)\b', ' ', time_clean, flags=re.IGNORECASE)
+        time_clean = re.sub(r',\s*', ' ', time_clean)
+        time_clean = re.sub(r'\s+', ' ', time_clean).strip()
+        hour, minute = extract_time(time_clean) if re.search(r'\d', time_clean) else (9, 0)
+        msg = message_part if message_part else _strip_time(time_clean)
+        if not msg:
+            return None
+        now = datetime.now()
+        results = []
+        for day_s, mon_s in ddmm_list:
+            d, m = int(day_s), int(mon_s)
+            try:
+                dt = datetime(now.year, m, d, hour, minute, 0)
+                if dt <= now:
+                    if repeat_type == "yearly":
+                        dt = dt.replace(year=now.year + 1)
+                    elif repeat_type == "monthly":
+                        dt = dt + relativedelta(months=1)
+                    else:
+                        dt = dt.replace(year=now.year + 1)
+            except ValueError:
+                continue
+            results.append((msg, dt, repeat_type))
+        if len(results) >= 2:
+            return results
+
+    # 3c. Nhiều ngày trong tháng (VD: ngày 5, 10, 20 — chỉ số ngày, không có /MM)
+    m_days = re.search(
+        r'\b(?:ngày|ngay)\s+((?:\d{1,2}\s*,\s*)+\d{1,2})(?!\s*/)',
+        time_and_days,
+    )
+    if m_days:
+        day_nums = [int(x) for x in re.findall(r'\d{1,2}', m_days.group(1)) if 1 <= int(x) <= 31]
+        if len(day_nums) >= 2:
+            time_clean = time_and_days.replace(m_days.group(0), ' ')
+            time_clean = re.sub(r',\s*', ' ', time_clean)
+            time_clean = re.sub(r'\s+', ' ', time_clean).strip()
+            hour, minute = extract_time(time_clean) if re.search(r'\d', time_clean) else (9, 0)
+            msg = message_part if message_part else _strip_time(time_clean)
+            if not msg:
+                return None
+            now = datetime.now()
+            results = []
+            for day in day_nums:
+                try:
+                    dt = now.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
+                except ValueError:
+                    first_next = (now + relativedelta(months=1)).replace(day=1)
+                    try:
+                        dt = first_next.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
+                    except ValueError:
+                        continue
+                if dt <= now:
+                    try:
+                        dt = (dt + relativedelta(months=1)).replace(
+                            day=day, hour=hour, minute=minute, second=0, microsecond=0
+                        )
+                    except ValueError:
+                        continue
+                results.append((msg, dt, repeat_type))
+            if len(results) >= 2:
+                return results
+
+    return None
+
+
 # =========================
 # HANDLER
 # =========================
@@ -663,6 +869,16 @@ async def send_help(update: Update):
             "   • <code>Khám định kỳ lúc 9h ngày 15/07/2026 mỗi 6 tháng</code>\n"
             "   • <code>Uống thuốc lúc 8h hôm nay mỗi 3 ngày</code>\n"
             "   • <code>Gia hạn domain lúc 9h ngày 05/06/2027 mỗi 2 năm</code>\n\n"
+            "   <b>📅 Nhiều ngày/thứ cùng lúc</b> — 1 lệnh tạo nhiều lịch:\n"
+            "   <i>Nhiều thứ trong tuần:</i>\n"
+            "   • <code>Họp lúc 9h T2, T4, T6 hàng tuần</code>  — lặp mỗi tuần vào T2, T4, T6\n"
+            "   • <code>Họp lúc 9h T2, T4, T6</code>  — gửi 1 lần vào T2/T4/T6 gần nhất\n"
+            "   <i>Nhiều ngày trong tháng (chỉ số ngày):</i>\n"
+            "   • <code>Nộp BC lúc 17h ngày 5, 20 hàng tháng</code>  — lặp ngày 5 và 20 mỗi tháng\n"
+            "   • <code>Nộp BC lúc 17h ngày 5, 20</code>  — gửi 1 lần vào ngày 5 và 20 tới\n"
+            "   <i>Nhiều ngày DD/MM (có tháng cụ thể):</i>\n"
+            "   • <code>Kỷ niệm lúc 8h ngày 20/6, 25/7 hàng năm</code>  — lặp 20/6 và 25/7 mỗi năm\n"
+            "   • <code>Kỷ niệm lúc 8h ngày 20/6, 25/7</code>  — gửi 1 lần vào 20/6 và 25/7\n\n"
             "   <b>🌙 Lịch âm</b> — thêm <code>âm lịch</code> hoặc <code>lịch âm</code> vào cuối:\n"
             "   • <code>Giỗ ông nội lúc 8h ngày 15/3 âm lịch hàng năm</code>\n"
             "   • <code>Cúng rằm tháng 7 lúc 9h âm lịch hàng năm</code>\n"
@@ -687,7 +903,7 @@ async def send_help(update: Update):
             "   • <code>al 15/3/2026</code> — dương → âm\n"
             "   • <code>dl 15/3/2026</code> — âm → dương\n\n"
             "5. <b>Thời tiết hiện tại:</b> <code>weather</code> hoặc <code>wt</code> hoặc <code>tt</code>\n\n"
-            "5. <b>Thời tiết theo thành phố:</b> <code>wt {tên thành phố}</code>\n"
+            "6. <b>Thời tiết theo thành phố:</b> <code>wt {tên thành phố}</code>\n"
             "   Ví dụ: <code>wt Bac Ninh</code>, <code>wt Ha Noi</code>, <code>wt Singapore</code>\n"
             "   Bot gửi thời tiết hiện tại + dự báo cả ngày mai.\n"
             "   Ngoài ra bot tự động gửi dự báo thời tiết vào giờ TIME_INFORMATION trong .env.",
@@ -947,6 +1163,36 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lunar_day = lunar_month = lunar_year = None
     lunar_leap = False
 
+    # Thử parse nhiều ngày/thứ trong 1 lệnh
+    if not is_lunar:
+        multi = parse_multi_reminder(text)
+        if multi and len(multi) >= 2:
+            inserted = []
+            for (m_msg, m_time, m_rtype) in multi:
+                cursor.execute(
+                    "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
+                    (user_id, m_msg, m_time),
+                )
+                if cursor.fetchone():
+                    continue
+                cursor.execute(
+                    "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (user_id, m_msg, m_time, m_rtype, False, None, None, None, False),
+                )
+                inserted.append((m_msg, m_time, m_rtype))
+            db.commit()
+            if not inserted:
+                await update.message.reply_text("⚠️ Dạ, tất cả lịch này em đã note rồi ạ!")
+                return
+            lines = [f"✅ <b>Đã thêm {len(inserted)} lịch:</b>"]
+            for (m_msg, m_time, m_rtype) in inserted:
+                wd = weekday_vi(m_time)
+                rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
+                lines.append(f"• {wd}, {m_time.strftime('%d-%m-%Y %H:%M')} — {m_msg} ({rt_str})")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
     if is_lunar:
         lunar_parsed = parse_lunar_reminder(text)
         if not lunar_parsed:
@@ -963,14 +1209,14 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parsed = parse_message(text)
         print("PARSED:", parsed, flush=True)
         if not parsed:
-            await update.message.reply_text(
-                "❌ Em chưa hiểu ý anh, anh có thể nói rõ hơn được không ạ?\n"
-                "Ví dụ: <code>Họp với team lúc 3h chiều hàng ngày</code>\n\n"
-                "💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết.",
-                parse_mode="HTML"
-            )
-            return
-        message, remind_time, repeat_type = parsed
+            # Không nhận ra cú pháp → dùng toàn bộ text làm nội dung, thời gian thông minh
+            message = text
+            remind_time = get_default_remind_time()
+            repeat_type = "none"
+            _fallback_hint = True
+        else:
+            message, remind_time, repeat_type = parsed
+            _fallback_hint = False
 
     text_repeat = format_repeat_type(repeat_type) if repeat_type != "none" else ""
 
@@ -990,6 +1236,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if repeat_type != "none":
         text_reply += f"🔁 <b>Tần suất:</b> {text_repeat}"
+    if not is_lunar and _fallback_hint:
+        text_reply += "\n\n💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết."
 
     cursor.execute(
         "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE ORDER BY remind_at DESC",
@@ -1099,9 +1347,13 @@ async def worker(app):
 
         for r in rows:
             try:
+                _is_repeat = r.get("repeat_type") and r["repeat_type"] != "none"
+                _notif_text = f"⏰ {r['message']}"
+                if _is_repeat:
+                    _notif_text += f"\n<i>· ID {r['id']}</i>"
                 await app.bot.send_message(
                     chat_id=r["user_id"],
-                    text=f"⏰ {r['message']}\n\n<i>ID: {r['id']}</i>",
+                    text=_notif_text,
                     parse_mode="HTML",
                 )
 
