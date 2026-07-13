@@ -94,6 +94,14 @@ def normalize_repeat(text):
         "hang thang": "monthly",
         "hàng năm": "yearly",
         "hang nam": "yearly",
+        "weekday": "weekday",
+        "ngày thường": "weekday",
+        "ngay thuong": "weekday",
+        "các ngày trong tuần": "weekday",
+        "cac ngay trong tuan": "weekday",
+        "weekend": "weekend",
+        "cuối tuần": "weekend",
+        "cuoi tuan": "weekend",
     }
     return mapping.get(text, None)
 
@@ -148,6 +156,8 @@ def format_repeat_type(repeat_type):
         "weekly":  "hàng tuần",
         "monthly": "hàng tháng",
         "yearly":  "hàng năm",
+        "weekday": "ngày trong tuần (T2–T6)",
+        "weekend": "cuối tuần (T7–CN)",
     }
     if repeat_type in _MAP:
         return _MAP[repeat_type]
@@ -200,7 +210,7 @@ def parse_lunar_reminder(original_text):
         repeat_type = _custom
     else:
         repeat_match = re.search(
-            r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly)",
+            r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly|ngày thường|ngay thuong|weekday|cuối tuần|cuoi tuan|weekend)",
             first_line, re.IGNORECASE)
         if repeat_match:
             repeat_type = normalize_repeat(repeat_match.group(2))
@@ -577,7 +587,7 @@ def parse_message(text):
             repeat_type = _custom
         else:
             repeat_match = re.search(
-                r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly)",
+                r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly|ngày thường|ngay thuong|weekday|cuối tuần|cuoi tuan|weekend)",
                 text,
                 re.IGNORECASE,
             )
@@ -722,7 +732,8 @@ def parse_multi_reminder(original_text):
     else:
         repeat_match = re.search(
             r"(repeat\s+)?(hàng ngày|hang ngay|daily|hàng tuần|hang tuan|weekly|"
-            r"hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly)",
+            r"hàng tháng|hang thang|monthly|hàng năm|hang nam|yearly|"
+            r"ngày thường|ngay thuong|weekday|cuối tuần|cuoi tuan|weekend)",
             text, re.IGNORECASE,
         )
         if repeat_match:
@@ -860,7 +871,7 @@ async def send_help(update: Update):
             "   • <code>10h T3 Nội dung</code>  — giờ trước, thứ sau (VD: <code>10h T3 Họp với đối tác</code>)\n"
             "   Hỗ trợ T2 T3 T4 T5 T6 T7 và Thứ 2 … Thứ 7\n"
             "   Nếu không nhập giờ, mặc định nhắc lúc <b>9:00</b>\n\n"
-            "   <b>Tần suất lặp cố định:</b> <code>hàng ngày</code> | <code>hàng tuần</code> | <code>hàng tháng</code> | <code>hàng năm</code>\n"
+            "   <b>Tần suất lặp cố định:</b> <code>hàng ngày</code> | <code>hàng tuần</code> | <code>hàng tháng</code> | <code>hàng năm</code> | <code>ngày thường</code> | <code>cuối tuần</code>\n"
             "   <b>Tần suất lặp tuỳ ý:</b> <code>mỗi N ngày</code> | <code>mỗi N tuần</code> | <code>mỗi N tháng</code> | <code>mỗi N năm</code>\n"
             "   Ví dụ:\n"
             "   • <code>Họp với team lúc 3h chiều hàng ngày</code>\n"
@@ -890,7 +901,7 @@ async def send_help(update: Update):
             "   • <code>Cúng mùng 1 lúc 6h tháng giêng âm lịch mỗi 6 tháng</code>\n"
             "   Lịch <b>hàng tháng / hàng năm</b> và <b>mỗi N tháng / mỗi N năm</b> sẽ được nhắc thêm <b>trước 1 ngày</b> cùng giờ.\n\n"
             "2. <b>Xem reminder:</b> <code>ls</code> — xem tất cả\n"
-            "   Lọc theo loại: <code>ls none</code> | <code>ls daily</code> | <code>ls monthly</code> | <code>ls weekly</code> | <code>ls yearly</code>\n"
+            "   Lọc theo loại: <code>ls none</code> | <code>ls daily</code> | <code>ls weekly</code> | <code>ls monthly</code> | <code>ls yearly</code> | <code>ls weekday</code> | <code>ls weekend</code>\n"
             "   Lọc theo thời gian: <code>ls today</code> hoặc <code>ls hôm nay</code> — hôm nay, chưa nhắc\n"
             "                       <code>ls week</code> hoặc <code>ls tuần</code> — lịch tuần này\n"
             "                       <code>ls month</code> hoặc <code>ls tháng</code> — lịch tháng này\n"
@@ -1037,6 +1048,12 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "yearly": "yearly",
             "hàng năm": "yearly",
             "hang nam": "yearly",
+            "weekday": "weekday",
+            "ngày thường": "weekday",
+            "ngay thuong": "weekday",
+            "weekend": "weekend",
+            "cuối tuần": "weekend",
+            "cuoi tuan": "weekend",
         }
 
         _WEEK_KEYWORDS  = {"week", "tuần", "tuan", "tuần này", "tuan nay"}
@@ -1362,6 +1379,21 @@ async def worker(app):
                     next_lunar_update = {}
                 elif r["repeat_type"] == "weekly":
                     next_time = r["remind_at"] + timedelta(days=7)
+                    next_lunar_update = {}
+                elif r["repeat_type"] == "weekday":
+                    # T2-T4(0-3): +1 ngày; T5(4)/T6(5)/CN(6): nhảy về T2
+                    _skip = {4: 3, 5: 2, 6: 1}
+                    next_time = r["remind_at"] + timedelta(days=_skip.get(r["remind_at"].weekday(), 1))
+                    next_lunar_update = {}
+                elif r["repeat_type"] == "weekend":
+                    # T7(5) → CN(6): +1; CN(6) → T7(5): +6; khác → T7 kế
+                    _d = r["remind_at"].weekday()
+                    if _d == 5:
+                        next_time = r["remind_at"] + timedelta(days=1)
+                    elif _d == 6:
+                        next_time = r["remind_at"] + timedelta(days=6)
+                    else:
+                        next_time = r["remind_at"] + timedelta(days=(5 - _d) % 7 or 7)
                     next_lunar_update = {}
                 elif r["repeat_type"] == "monthly":
                     if r.get("is_lunar") and r.get("lunar_day"):
