@@ -956,7 +956,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ====== HELP =====
-    if text in ["help", "h", "giúp", "giup"]:
+    if text_lower in ["help", "h", "giúp", "giup"]:
         await send_help(update)
         return
 
@@ -1162,7 +1162,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ===== DELETE tự nhiên =====
-    match_del = re.match(r"(del|delete|xoá|xoa)\s+(\d+)", text)
+    match_del = re.match(r"(del|delete|xoá|xoa)\s+(\d+)", text, re.IGNORECASE)
     if match_del:
         rid = match_del.group(2)
 
