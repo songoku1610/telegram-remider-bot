@@ -11,6 +11,7 @@ import unicodedata
 from dateutil.relativedelta import relativedelta
 from weatherAPI import format_tomorrow_7am_forecast, format_tomorrow_day_forecast, format_weather_info
 from lunarcalendar import solar_to_lunar, lunar_to_solar
+from llm_service import parse_with_gemini
 
 
 from telegram import Update
@@ -1179,6 +1180,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_lunar = bool(LUNAR_KEYWORDS_RE.search(text))
     lunar_day = lunar_month = lunar_year = None
     lunar_leap = False
+    _fallback_hint = False
+    _llm_auto_slot_note = None
 
     # Thử parse nhiều ngày/thứ trong 1 lệnh
     if not is_lunar:
@@ -1210,9 +1213,66 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
 
+    # Thử parse bằng parser nội bộ trước
+    parsed = False
     if is_lunar:
         lunar_parsed = parse_lunar_reminder(text)
-        if not lunar_parsed:
+        if lunar_parsed:
+            message, remind_time, repeat_type, lunar_day, lunar_month, lunar_year, lunar_leap = lunar_parsed
+            parsed = True
+    else:
+        parsed_res = parse_message(text)
+        if parsed_res:
+            message, remind_time, repeat_type = parsed_res
+            parsed = True
+
+    # Nếu parser nội bộ không nhận diện được cú pháp → Chuyển qua LLM Gemini Flash
+    if not parsed:
+        now_local = datetime.now(WEATHER_INFORMATION_TIMEZONE)
+        try:
+            llm_data = await parse_with_gemini(text, now_local)
+        except Exception as exc:
+            print("LLM CALL ERROR:", exc, flush=True)
+            llm_data = None
+
+        if llm_data:
+            # 1. Kiểm tra có phải là reminder không
+            if not llm_data.get("is_reminder"):
+                reply_txt = llm_data.get("reply_text")
+                if reply_txt:
+                    await update.message.reply_text(reply_txt)
+                else:
+                    await update.message.reply_text(
+                        "Dạ em nghe ạ! Nếu anh muốn đặt lịch nhắc, hãy nhắn nội dung kèm thời gian nhé (hoặc gửi <code>h</code> để xem hướng dẫn).",
+                        parse_mode="HTML"
+                    )
+                return
+
+            # 2. Người dùng muốn tạo reminder -> Lấy cú pháp chuẩn đã được LLM convert
+            std_text = llm_data.get("standard_syntax")
+            if std_text:
+                print(f"🤖 LLM CONVERTED: '{text}' -> '{std_text}'", flush=True)
+                is_lunar = bool(LUNAR_KEYWORDS_RE.search(std_text))
+                if is_lunar:
+                    lunar_parsed = parse_lunar_reminder(std_text)
+                    if lunar_parsed:
+                        message, remind_time, repeat_type, lunar_day, lunar_month, lunar_year, lunar_leap = lunar_parsed
+                        parsed = True
+                else:
+                    parsed_res = parse_message(std_text)
+                    if parsed_res:
+                        message, remind_time, repeat_type = parsed_res
+                        parsed = True
+
+                # Nếu người dùng không chỉ định giờ, ghi chú nhỏ về giờ gợi ý (9h hoặc 16h)
+                if parsed and not llm_data.get("has_explicit_time"):
+                    slot = llm_data.get("suggested_slot")
+                    slot_desc = "9h sáng" if slot == "morning_9h" else "16h chiều" if slot == "afternoon_16h" else f"{remind_time.strftime('%H:%M')}"
+                    _llm_auto_slot_note = f"\n💡 <i>(Em đã tự động đặt vào lúc {slot_desc} theo ngữ cảnh cho anh)</i>"
+
+    # Fallback cuối cùng nếu cả regex và LLM không parse được
+    if not parsed:
+        if is_lunar:
             await update.message.reply_text(
                 "❌ Em chưa hiểu ngày âm lịch anh nhập ạ!\n"
                 "Thử dạng: <code>Giỗ ông nội lúc 8h ngày 15/3 âm lịch</code>\n"
@@ -1221,19 +1281,12 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             return
-        message, remind_time, repeat_type, lunar_day, lunar_month, lunar_year, lunar_leap = lunar_parsed
-    else:
-        parsed = parse_message(text)
-        print("PARSED:", parsed, flush=True)
-        if not parsed:
+        else:
             # Không nhận ra cú pháp → dùng toàn bộ text làm nội dung, thời gian thông minh
             message = text
             remind_time = get_default_remind_time()
             repeat_type = "none"
             _fallback_hint = True
-        else:
-            message, remind_time, repeat_type = parsed
-            _fallback_hint = False
 
     text_repeat = format_repeat_type(repeat_type) if repeat_type != "none" else ""
 
@@ -1253,6 +1306,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if repeat_type != "none":
         text_reply += f"🔁 <b>Tần suất:</b> {text_repeat}"
+    if _llm_auto_slot_note:
+        text_reply += _llm_auto_slot_note
     if not is_lunar and _fallback_hint:
         text_reply += "\n\n💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết."
 
