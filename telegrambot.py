@@ -858,6 +858,76 @@ def parse_multi_reminder(original_text):
 
 
 # =========================
+# HELPER: CẮT TIN NHẮN DÀI
+# =========================
+def split_message_chunks(text: str, max_length: int = 3800) -> list[str]:
+    """Cắt tin nhắn thành các phần nhỏ hơn max_length (Telegram limit 4096), ưu tiên theo paragraph."""
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+
+    paragraphs = text.split("\n\n")
+    for para in paragraphs:
+        candidate = f"{current_chunk}\n\n{para}" if current_chunk else para
+        if len(candidate) <= max_length:
+            current_chunk = candidate
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = ""
+            if len(para) > max_length:
+                lines = para.split("\n")
+                sub_chunk = ""
+                for line in lines:
+                    sub_candidate = f"{sub_chunk}\n{line}" if sub_chunk else line
+                    if len(sub_candidate) <= max_length:
+                        sub_chunk = sub_candidate
+                    else:
+                        if sub_chunk:
+                            chunks.append(sub_chunk)
+                            sub_chunk = ""
+                        while len(line) > max_length:
+                            chunks.append(line[:max_length])
+                            line = line[max_length:]
+                        sub_chunk = line
+                if sub_chunk:
+                    current_chunk = sub_chunk
+            else:
+                current_chunk = para
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
+async def send_split_message(update: Update, text: str, parse_mode: str | None = None):
+    """Gửi tin nhắn reply an toàn, tự động chia nhỏ nếu vượt quá giới hạn Telegram."""
+    chunks = split_message_chunks(text)
+    for i, chunk in enumerate(chunks):
+        try:
+            await update.message.reply_text(chunk, parse_mode=parse_mode)
+        except Exception:
+            await update.message.reply_text(chunk)
+        if i < len(chunks) - 1:
+            await asyncio.sleep(0.3)
+
+
+async def send_bot_split_message(bot, chat_id: int, text: str, parse_mode: str | None = None):
+    """Gửi tin nhắn từ bot an toàn, tự động chia nhỏ nếu vượt quá giới hạn Telegram."""
+    chunks = split_message_chunks(text)
+    for i, chunk in enumerate(chunks):
+        try:
+            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=parse_mode)
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=chunk)
+        if i < len(chunks) - 1:
+            await asyncio.sleep(0.3)
+
+
+# =========================
 # HANDLER
 # =========================
 async def send_help(update: Update):
@@ -1159,7 +1229,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔁 {format_repeat_type(r['repeat_type'])}
 
 """
-        await update.message.reply_text(msg)
+        await send_split_message(update, msg)
         return
 
     # ===== DELETE tự nhiên =====
@@ -1664,7 +1734,7 @@ async def monthly_summary_worker(app):
                         msg += f"🔁 {format_repeat_type(r['repeat_type'])}\n\n"
 
                     try:
-                        await app.bot.send_message(chat_id=uid, text=msg, parse_mode="HTML")
+                        await send_bot_split_message(app.bot, uid, msg, parse_mode="HTML")
                     except Exception as e:
                         print(f"MONTHLY SUMMARY SEND ERROR uid={uid}: {e}", flush=True)
 
@@ -1673,6 +1743,16 @@ async def monthly_summary_worker(app):
                 print(f"MONTHLY SUMMARY ERROR: {e}", flush=True)
 
         await asyncio.sleep(30)
+
+
+async def on_telegram_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Bắt và log lỗi Telegram tránh spam unhandled exception / Bad Gateway."""
+    err = context.error
+    import telegram.error
+    if isinstance(err, (telegram.error.NetworkError, telegram.error.TimedOut)):
+        print(f"⚠️ Telegram Network Warning: {err}", flush=True)
+    else:
+        print(f"❌ Telegram Error: {err}", flush=True)
 
 
 def run():
@@ -1686,6 +1766,8 @@ def run():
         .get_updates_pool_timeout(30)
         .build()
     )
+
+    app.add_error_handler(on_telegram_error)
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
