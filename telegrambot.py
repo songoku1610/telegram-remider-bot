@@ -369,6 +369,42 @@ def weekday_vi(dt: datetime) -> str:
     return WEEKDAY_VI[dt.weekday()]
 
 
+def format_reminder_listing(rows, title):
+    grouped_rows = {}
+    for reminder in rows:
+        normalized_message = " ".join(reminder["message"].split()).casefold()
+        key = (normalized_message, reminder["repeat_type"])
+        grouped_rows.setdefault(key, []).append(reminder)
+
+    msg = f"{title}:\n\n"
+    for reminders in grouped_rows.values():
+        if len(reminders) == 1:
+            reminder = reminders[0]
+            lunar_line = ""
+            if reminder.get("is_lunar") and reminder.get("lunar_day"):
+                lunar_label = f"tháng {reminder['lunar_month']}" + (" nhuận" if reminder.get("lunar_leap") else "")
+                lunar_line = f"\n🌙 Âm lịch: ngày {reminder['lunar_day']} {lunar_label} năm {reminder['lunar_year']} {reminder['remind_at'].strftime('%H:%M')}"
+            wd = weekday_vi(reminder["remind_at"])
+            msg += f"""ID: {reminder['id']}
+⏰ {wd}, {reminder['remind_at'].strftime('%d-%m-%Y %H:%M')}{lunar_line}
+📌 {reminder['message']}
+🔁 {format_repeat_type(reminder['repeat_type'])}
+
+"""
+            continue
+
+        first_reminder = reminders[0]
+        msg += f"📌 {first_reminder['message']}\n🔁 {format_repeat_type(first_reminder['repeat_type'])}\n"
+        for reminder in reminders:
+            wd = weekday_vi(reminder["remind_at"])
+            msg += f"⏰ {wd}, {reminder['remind_at'].strftime('%d-%m-%Y %H:%M')} — ID: {reminder['id']}\n"
+            if reminder.get("is_lunar") and reminder.get("lunar_day"):
+                lunar_label = f"tháng {reminder['lunar_month']}" + (" nhuận" if reminder.get("lunar_leap") else "")
+                msg += f"🌙 Âm lịch: ngày {reminder['lunar_day']} {lunar_label} năm {reminder['lunar_year']} {reminder['remind_at'].strftime('%H:%M')}\n"
+        msg += "\n"
+    return msg
+
+
 def get_default_remind_time() -> datetime:
     """Thời gian nhắc mặc định khi không xác định được thời gian:
     - Trước 9h  → 9h hôm nay
@@ -1216,19 +1252,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📭 Dạ anh chưa có lịch gì ạ!")
             return
 
-        msg = f"{title}:\n\n"
-        for r in rows:
-            lunar_line = ""
-            if r.get("is_lunar") and r.get("lunar_day"):
-                lunar_label = f"tháng {r['lunar_month']}" + (" nhuận" if r.get("lunar_leap") else "")
-                lunar_line = f"\n🌙 Âm lịch: ngày {r['lunar_day']} {lunar_label} năm {r['lunar_year']} {r['remind_at'].strftime('%H:%M')}"
-            wd = weekday_vi(r['remind_at'])
-            msg += f"""ID: {r['id']}
-⏰ {wd}, {r['remind_at'].strftime('%d-%m-%Y %H:%M')}{lunar_line}
-📌 {r['message']}
-🔁 {format_repeat_type(r['repeat_type'])}
-
-"""
+        msg = format_reminder_listing(rows, title)
         await send_split_message(update, msg)
         return
 

@@ -6,7 +6,12 @@ from zoneinfo import ZoneInfo
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-from telegrambot import parse_message, parse_lunar_reminder, LUNAR_KEYWORDS_RE
+from telegrambot import (
+    parse_message,
+    parse_lunar_reminder,
+    LUNAR_KEYWORDS_RE,
+    format_reminder_listing,
+)
 from llm_service import build_system_instruction
 
 def test_syntax_compatibility():
@@ -50,6 +55,24 @@ def test_system_prompt():
     print("✅ Prompt generation inject ngữ cảnh thời gian thành công!")
 
 
+def test_reminder_listing_groups_matching_content_and_repeat_type():
+    reminders = [
+        {"id": 563, "message": "go around and stretch", "repeat_type": "weekly", "remind_at": datetime(2026, 10, 1, 10, 0)},
+        {"id": 567, "message": " GO around and stretch ", "repeat_type": "weekly", "remind_at": datetime(2026, 10, 1, 15, 0)},
+        {"id": 598, "message": "go around and stretch", "repeat_type": "daily", "remind_at": datetime(2026, 10, 1, 11, 46)},
+    ]
+
+    listing = format_reminder_listing(reminders, "📅 Lịch tháng 10/2026")
+
+    assert listing.count("📌") == 2
+    assert "🔁 hàng tuần" in listing
+    assert "🔁 hàng ngày" in listing
+    assert "01-10-2026 10:00 — ID: 563" in listing
+    assert "01-10-2026 15:00 — ID: 567" in listing
+    assert "01-10-2026 11:46" in listing
+
+
 if __name__ == "__main__":
     test_syntax_compatibility()
     test_system_prompt()
+    test_reminder_listing_groups_matching_content_and_repeat_type()
