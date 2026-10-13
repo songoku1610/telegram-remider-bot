@@ -121,6 +121,10 @@ NHIỆM VỤ CỦA BẠN:
    - Lọc bỏ các từ râu ria, xưng hô không cần thiết như: "Kính nhờ các anh", "nhớ nhắc anh/em/tao", "ê bot", "giúp tao", "nhé", "nha".
    - Nếu tin nhắn có "Deadline : DD/MM/YYYY" hoặc "Hạn chót" hoặc "Để đầu tháng 10... họp": tóm tắt hành động cần làm. Viết hoa chữ cái đầu.
 
+2.1 Nhận diện cuộc họp (is_meeting):
+   - "is_meeting": true chỉ khi nội dung là một cuộc họp/lịch gặp cần tham dự, ví dụ có "họp", "meeting", "lịch gặp đối tác".
+   - Deadline, công việc cá nhân, nhắc nộp báo cáo hoặc lời chào không phải cuộc họp thì "is_meeting": false.
+
 3. QUY TẮC SUY LUẬN THỜI GIAN & FALLBACK 9H SÁNG / 16H CHIỀU:
    a. Người dùng có nói giờ cụ thể (ví dụ 10h, 8h30 sáng, 4 rưỡi chiều):
       - Giữ nguyên giờ đó (chuyển sang định dạng HH:MM 24h).
@@ -157,6 +161,7 @@ Bắt buộc trả về đúng định dạng JSON thuần tuý (JSON object), k
   "clean_message": "Nội dung việc cần làm",
   "standard_syntax": "Chuỗi cú pháp chuẩn để nạp vào bot",
   "has_explicit_time": true hoặc false,
+  "is_meeting": true hoặc false,
   "suggested_slot": "morning_9h" | "afternoon_16h" | "exact" | "other",
   "repeat_type": "none" | "daily" | "weekly" | "monthly" | "yearly" | "weekday" | "weekend",
   "is_lunar": true hoặc false,

@@ -11,6 +11,7 @@ from telegrambot import (
     parse_lunar_reminder,
     LUNAR_KEYWORDS_RE,
     format_reminder_listing,
+    build_llm_meeting_reminders,
 )
 from llm_service import build_system_instruction
 
@@ -52,6 +53,7 @@ def test_system_prompt():
     assert "2026-09-28 11:45:00" in prompt
     assert "Thứ Hai" in prompt
     assert "âm lịch" in prompt
+    assert '"is_meeting"' in prompt
     print("✅ Prompt generation inject ngữ cảnh thời gian thành công!")
 
 
@@ -72,7 +74,20 @@ def test_reminder_listing_groups_matching_content_and_repeat_type():
     assert "01-10-2026 11:46" in listing
 
 
+def test_llm_meeting_creates_main_and_pre_reminders():
+    meeting_time = datetime(2026, 10, 20, 10, 0)
+
+    reminders = build_llm_meeting_reminders("Họp dự án", meeting_time, "weekly")
+
+    assert reminders == [
+        ("Họp dự án", datetime(2026, 10, 20, 10, 0), "weekly"),
+        ("Nhắc trước 15 phút: Họp dự án", datetime(2026, 10, 20, 9, 45), "weekly"),
+        ("Nhắc trước 5 phút: Họp dự án", datetime(2026, 10, 20, 9, 55), "weekly"),
+    ]
+
+
 if __name__ == "__main__":
     test_syntax_compatibility()
     test_system_prompt()
     test_reminder_listing_groups_matching_content_and_repeat_type()
+    test_llm_meeting_creates_main_and_pre_reminders()

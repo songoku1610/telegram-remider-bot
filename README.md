@@ -277,6 +277,13 @@ run()
 9. Còn lại                    → parse_message() → thêm reminder dương lịch
 ```
 
+Với tin nhắn phải qua LLM, nếu LLM xác định đó là cuộc họp, bot tạo thêm hai
+reminder trước giờ họp 15 phút và 5 phút. Ba reminder được lưu độc lập để worker
+hiện tại tiếp tục xử lý lịch lặp mà không cần cơ chế mới. V1 chưa gộp ba thông báo
+thành một bản ghi; giữ thiết kế này đơn giản cho đến khi số liệu vận hành cho thấy
+cần nâng cấp. Log `reminder_created` chỉ ghi ID người dùng, số reminder và cờ luồng,
+không ghi nội dung cuộc họp.
+
 ---
 
 ### Parse thời gian dương lịch

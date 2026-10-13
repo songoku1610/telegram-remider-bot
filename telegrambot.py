@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ TIME_INFORMATION = None
 WEATHER_INFORMATION_TIMEZONE = None
 db = None
 cursor = None
+logger = logging.getLogger(__name__)
 
 
 def init():
@@ -164,6 +166,15 @@ def format_repeat_type(repeat_type):
         return _MAP[repeat_type]
     decoded = decode_interval(repeat_type)
     return decoded if decoded else repeat_type
+
+
+def build_llm_meeting_reminders(message, remind_time, repeat_type):
+    """Tạo reminder chính và hai reminder báo trước cho cuộc họp do LLM nhận diện."""
+    return [
+        (message, remind_time, repeat_type),
+        (f"Nhắc trước 15 phút: {message}", remind_time - timedelta(minutes=15), repeat_type),
+        (f"Nhắc trước 5 phút: {message}", remind_time - timedelta(minutes=5), repeat_type),
+    ]
 
 
 # =========================
@@ -1276,6 +1287,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lunar_leap = False
     _fallback_hint = False
     _llm_auto_slot_note = None
+    _llm_meeting = False
 
     # Thử parse nhiều ngày/thứ trong 1 lệnh
     if not is_lunar:
@@ -1364,6 +1376,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     slot_desc = "9h sáng" if slot == "morning_9h" else "16h chiều" if slot == "afternoon_16h" else f"{remind_time.strftime('%H:%M')}"
                     _llm_auto_slot_note = f"\n💡 <i>(Em đã tự động đặt vào lúc {slot_desc} theo ngữ cảnh cho anh)</i>"
 
+                _llm_meeting = parsed and bool(llm_data.get("is_meeting"))
+
     # Fallback cuối cùng nếu cả regex và LLM không parse được
     if not parsed:
         if is_lunar:
@@ -1402,8 +1416,16 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_reply += f"🔁 <b>Tần suất:</b> {text_repeat}"
     if _llm_auto_slot_note:
         text_reply += _llm_auto_slot_note
+    if _llm_meeting:
+        text_reply += "\n🔔 <b>Nhắc thêm:</b> trước 15 phút và trước 5 phút"
     if not is_lunar and _fallback_hint:
         text_reply += "\n\n💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết."
+
+    reminders_to_add = (
+        build_llm_meeting_reminders(message, remind_time, repeat_type)
+        if _llm_meeting
+        else [(message, remind_time, repeat_type)]
+    )
 
     cursor.execute(
         "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE ORDER BY remind_at DESC",
@@ -1414,15 +1436,26 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Dạ, lịch này trước đó em đã note rồi ạ!")
         return
 
-    cursor.execute(
-        "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
-        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (user_id, message, remind_time, repeat_type,
-         is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap),
-    )
-    db.commit()
+    try:
+        for reminder_message, reminder_at, reminder_repeat_type in reminders_to_add:
+            cursor.execute(
+                "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, reminder_message, reminder_at, reminder_repeat_type,
+                 is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
-    print(f"ADD: {message} at {remind_time} (lunar={is_lunar})", flush=True)
+    logger.info(
+        "reminder_created user_id=%s reminder_count=%s is_llm_meeting=%s lunar=%s",
+        user_id,
+        len(reminders_to_add),
+        _llm_meeting,
+        is_lunar,
+    )
 
     await update.message.reply_text(text_reply, parse_mode="HTML")
 
