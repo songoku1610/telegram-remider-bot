@@ -52,23 +52,40 @@ def init():
 
 
 def migrate():
-    """Tự động thêm cột mới nếu chưa có. An toàn khi chạy nhiều lần."""
+    """Tự động thêm cột lunar nếu chưa có, tương thích MySQL không hỗ trợ IF NOT EXISTS."""
     migrations = [
-        "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS is_lunar     BOOLEAN          DEFAULT FALSE",
-        "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS lunar_day    TINYINT UNSIGNED DEFAULT NULL",
-        "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS lunar_month  TINYINT UNSIGNED DEFAULT NULL",
-        "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS lunar_year   SMALLINT UNSIGNED DEFAULT NULL",
-        "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS lunar_leap   BOOLEAN          DEFAULT FALSE",
+        ("is_lunar", "BOOLEAN DEFAULT FALSE"),
+        ("lunar_day", "TINYINT UNSIGNED DEFAULT NULL"),
+        ("lunar_month", "TINYINT UNSIGNED DEFAULT NULL"),
+        ("lunar_year", "SMALLINT UNSIGNED DEFAULT NULL"),
+        ("lunar_leap", "BOOLEAN DEFAULT FALSE"),
     ]
     c = db.cursor()
-    for sql in migrations:
-        try:
-            c.execute(sql)
-        except Exception as e:
-            print(f"MIGRATE SKIP: {e}", flush=True)
-    db.commit()
-    c.close()
-    print("DB migration done.", flush=True)
+    try:
+        for column_name, column_definition in migrations:
+            c.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'reminders'
+                  AND column_name = %s
+                LIMIT 1
+                """,
+                (column_name,),
+            )
+            if not c.fetchone():
+                c.execute(f"ALTER TABLE reminders ADD COLUMN {column_name} {column_definition}")
+                logger.info("migration_column_added column=%s", column_name)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("migration_failed")
+        raise
+    finally:
+        c.close()
+
+    logger.info("migration_completed")
 
 
 def ensure_connection():

@@ -77,7 +77,7 @@ docker compose logs -f bot
 ```
 
 > **Lần đầu** Docker tự chạy `mysql-init/01-init.sql` (tạo bảng + index).  
-> **Các lần sau** `migrate()` trong code tự thêm cột mới bằng `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+> **Các lần sau** `migrate()` trong code kiểm tra `information_schema.columns` trước khi thêm cột. Cách này idempotent và tương thích cả các bản MySQL không hỗ trợ `ADD COLUMN IF NOT EXISTS`.
 
 ---
 
@@ -248,7 +248,7 @@ run()
  ├── init()
  │    ├── load_dotenv()
  │    ├── mysql.connector.connect(...)
- │    └── migrate()  — ALTER TABLE ADD COLUMN IF NOT EXISTS (5 cột lunar)
+ │    └── migrate()  — kiểm tra metadata rồi thêm 5 cột lunar còn thiếu
  └── app.run_polling()
 ```
 

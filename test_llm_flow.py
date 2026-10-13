@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+import telegrambot
 from telegrambot import (
     parse_message,
     parse_lunar_reminder,
@@ -86,8 +87,59 @@ def test_llm_meeting_creates_main_and_pre_reminders():
     ]
 
 
+def test_migration_uses_metadata_check_before_adding_columns():
+    class FakeCursor:
+        def __init__(self):
+            self.columns = {"is_lunar", "lunar_day"}
+            self.column_exists = False
+            self.closed = False
+
+        def execute(self, sql, params=None):
+            if "information_schema.columns" in sql:
+                self.column_exists = params[0] in self.columns
+            elif "ALTER TABLE reminders ADD COLUMN" in sql:
+                self.columns.add(sql.split("ADD COLUMN ", 1)[1].split()[0])
+
+        def fetchone(self):
+            return (1,) if self.column_exists else None
+
+        def close(self):
+            self.closed = True
+
+    class FakeDb:
+        def __init__(self):
+            self.cursor_instance = FakeCursor()
+            self.committed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    previous_db = telegrambot.db
+    fake_db = FakeDb()
+    telegrambot.db = fake_db
+    try:
+        telegrambot.migrate()
+    finally:
+        telegrambot.db = previous_db
+
+    assert fake_db.committed is True
+    assert fake_db.rolled_back is False
+    assert fake_db.cursor_instance.closed is True
+    assert fake_db.cursor_instance.columns == {
+        "is_lunar", "lunar_day", "lunar_month", "lunar_year", "lunar_leap"
+    }
+
+
 if __name__ == "__main__":
     test_syntax_compatibility()
     test_system_prompt()
     test_reminder_listing_groups_matching_content_and_repeat_type()
     test_llm_meeting_creates_main_and_pre_reminders()
+    test_migration_uses_metadata_check_before_adding_columns()
