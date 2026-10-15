@@ -1,5 +1,19 @@
 # Environment variables (contains secrets — NEVER commit)
 .env
+.env.*
+!.env.example
+*.env
+secrets/
+credentials/
+
+# Private keys and credential exports
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+service-account*.json
+firebase-adminsdk*.json
 
 # Python
 __pycache__/
@@ -16,3 +30,16 @@ env/
 
 # Docker volumes
 db_data/
+
+# Local database backups (may contain personal data)
+backup/
+*.sql.gz
+*.sql.xz
+*.dump
+*.bak
+*.backup
+*.sqlite
+*.sqlite3
+
+# Local logs
+*.log

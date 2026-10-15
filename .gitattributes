@@ -1,0 +1,2 @@
+# Shell scripts are executed on Linux hosts and must keep Unix line endings.
+*.sh text eol=lf
