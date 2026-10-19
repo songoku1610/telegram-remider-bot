@@ -1371,8 +1371,97 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 return
 
-            # 2. Người dùng muốn tạo reminder -> Lấy cú pháp chuẩn đã được LLM convert
-            std_text = llm_data.get("standard_syntax")
+            items = llm_data.get("reminders") or []
+            if not items and llm_data.get("standard_syntax"):
+                items = [llm_data]
+
+            # 2a. Trường hợp LLM tách ra NHIỀU lịch (Multi-reminders / Batch)
+            if len(items) > 1:
+                inserted = []
+                skipped_duplicates = 0
+                for item in items:
+                    std_text = item.get("standard_syntax")
+                    if not std_text:
+                        continue
+                    item_is_lunar = bool(item.get("is_lunar") or LUNAR_KEYWORDS_RE.search(std_text))
+                    item_parsed = False
+                    if item_is_lunar:
+                        lunar_res = parse_lunar_reminder(std_text)
+                        if lunar_res:
+                            m_msg, m_time, m_rtype, m_ld, m_lm, m_ly, m_leap = lunar_res
+                            item_parsed = True
+                            m_lunar = True
+                    else:
+                        parsed_res = parse_message(std_text)
+                        if parsed_res:
+                            m_msg, m_time, m_rtype = parsed_res
+                            item_parsed = True
+                            m_lunar, m_ld, m_lm, m_ly, m_leap = False, None, None, None, False
+
+                    if not item_parsed:
+                        m_msg = item.get("clean_message") or std_text
+                        m_time = parse_time(std_text) or get_default_remind_time()
+                        m_rtype = item.get("repeat_type") or "none"
+                        m_lunar, m_ld, m_lm, m_ly, m_leap = False, None, None, None, False
+
+                    is_meeting_item = bool(item.get("is_meeting"))
+                    to_add = (
+                        build_llm_meeting_reminders(m_msg, m_time, m_rtype)
+                        if is_meeting_item
+                        else [(m_msg, m_time, m_rtype)]
+                    )
+
+                    # Kiểm tra xem lịch chính đã tồn tại chưa
+                    cursor.execute(
+                        "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
+                        (user_id, m_msg, m_time),
+                    )
+                    if cursor.fetchone():
+                        skipped_duplicates += 1
+                        continue
+
+                    for reminder_message, reminder_at, reminder_repeat_type in to_add:
+                        cursor.execute(
+                            "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
+                            (user_id, reminder_message, reminder_at),
+                        )
+                        if cursor.fetchone():
+                            continue
+
+                        cursor.execute(
+                            "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
+                            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (user_id, reminder_message, reminder_at, reminder_repeat_type, m_lunar, m_ld, m_lm, m_ly, m_leap),
+                        )
+                    inserted.append((m_msg, m_time, m_rtype, is_meeting_item))
+
+                db.commit()
+
+                if not inserted:
+                    if skipped_duplicates > 0:
+                        await update.message.reply_text("⚠️ Dạ, tất cả lịch này trước đó em đã note rồi ạ!")
+                    else:
+                        await update.message.reply_text("❌ Em không thể tạo được lịch nào từ danh sách này. Vui lòng kiểm tra lại.")
+                    return
+
+                lines = [f"✅ <b>Dạ em đã thêm {len(inserted)} lịch nhắc vào danh sách của anh:</b>\n"]
+                for (m_msg, m_time, m_rtype, is_meet) in inserted:
+                    wd = weekday_vi(m_time)
+                    time_str = f"{wd}, {m_time.strftime('%d-%m-%Y %H:%M')}"
+                    rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
+                    meet_note = " <i>(kèm nhắc trước 15p & 5p)</i>" if is_meet else ""
+                    lines.append(f"• <b>{m_msg}</b>\n  ⏰ {time_str} ({rt_str}){meet_note}")
+
+                if skipped_duplicates > 0:
+                    lines.append(f"\n<i>(Đã bỏ qua {skipped_duplicates} lịch bị trùng trước đó)</i>")
+
+                msg_reply = "\n".join(lines)
+                await send_split_message(update, msg_reply, parse_mode="HTML")
+                return
+
+            # 2b. Người dùng tạo 1 reminder -> Lấy cú pháp chuẩn đã được LLM convert
+            single_item = items[0] if items else llm_data
+            std_text = single_item.get("standard_syntax")
             if std_text:
                 print(f"🤖 LLM CONVERTED: '{text}' -> '{std_text}'", flush=True)
                 is_lunar = bool(LUNAR_KEYWORDS_RE.search(std_text))
@@ -1388,12 +1477,12 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parsed = True
 
                 # Nếu người dùng không chỉ định giờ, ghi chú nhỏ về giờ gợi ý (9h hoặc 16h)
-                if parsed and not llm_data.get("has_explicit_time"):
-                    slot = llm_data.get("suggested_slot")
+                if parsed and not single_item.get("has_explicit_time"):
+                    slot = single_item.get("suggested_slot")
                     slot_desc = "9h sáng" if slot == "morning_9h" else "16h chiều" if slot == "afternoon_16h" else f"{remind_time.strftime('%H:%M')}"
                     _llm_auto_slot_note = f"\n💡 <i>(Em đã tự động đặt vào lúc {slot_desc} theo ngữ cảnh cho anh)</i>"
 
-                _llm_meeting = parsed and bool(llm_data.get("is_meeting"))
+                _llm_meeting = parsed and bool(single_item.get("is_meeting"))
 
     # Fallback cuối cùng nếu cả regex và LLM không parse được
     if not parsed:

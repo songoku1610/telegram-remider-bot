@@ -119,6 +119,45 @@ CREATE TABLE reminders (
 
 **Index:** `idx_remind_at`, `idx_active`, `idx_active_remind`
 
+### Bảo trì database (backup & dọn dẹp hàng năm)
+
+Hai script chạy trên **máy host chạy Docker** (cần `bash`, `flock`, `docker compose`):
+
+| Script | Tác dụng |
+|---|---|
+| `scripts/backup-db.sh` | Dump MySQL ra `backup/reminder_bot_<time>.sql.gz`, giữ 370 ngày |
+| `scripts/cleanup-expired-one-time-reminders.sh` | Xóa reminder 1 lần (`repeat_type='none'`) đã nhắc xong (`is_active=FALSE`) và quá hạn hơn 1 ngày |
+
+Script cleanup mặc định là `--dry-run` (chỉ đếm). `--execute` mới xóa thật và **từ chối xóa nếu không có backup `.sql.gz` nào trong 2 ngày gần nhất**. Reminder lặp lại không bị đụng tới.
+
+> Lưu ý: DB không có cột `sent_at`, nên reminder 1 lần bị hủy thủ công (`/del`) sau thời điểm nhắc cũng bị xóa.
+
+**Cài đặt:**
+
+```bash
+chmod +x scripts/*.sh
+
+# Thử trước (không xóa)
+./scripts/cleanup-expired-one-time-reminders.sh --dry-run
+
+# Xóa thật (cần có backup mới)
+./scripts/backup-db.sh && ./scripts/cleanup-expired-one-time-reminders.sh --execute
+```
+
+**Crontab** (`crontab -e`, thay `/opt/telegram-bot-reminder` bằng đường dẫn thật):
+
+```cron
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Backup hàng tháng: 02:00 ngày 1
+0 2 1 * * /opt/telegram-bot-reminder/scripts/backup-db.sh >> /var/log/reminder-backup.log 2>&1
+
+# Dọn dẹp hàng năm: 03:00 ngày 2 tháng 1 (sau backup ngày 1/1)
+0 3 2 1 * /opt/telegram-bot-reminder/scripts/cleanup-expired-one-time-reminders.sh --execute >> /var/log/reminder-cleanup.log 2>&1
+```
+
+User chạy cron phải có quyền dùng Docker và ghi được vào `backup/` và file log. Kiểm tra: `crontab -l`, `tail /var/log/reminder-cleanup.log`.
+
 ---
 
 ## Cú pháp lệnh

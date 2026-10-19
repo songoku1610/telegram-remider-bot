@@ -24,7 +24,7 @@ DEFAULT_OPENROUTER_MODELS = [
     "qwen/qwen-2.5-72b-instruct:free",
 ]
 
-DEFAULT_TIMEOUT = 8.0
+DEFAULT_TIMEOUT = 15.0
 DEFAULT_MORNING_HOUR = "09:00"
 DEFAULT_AFTERNOON_HOUR = "16:00"
 
@@ -96,7 +96,8 @@ def build_system_instruction(current_dt: datetime) -> str:
     """Tạo prompt hệ thống kèm ngữ cảnh thời gian hiện tại."""
     wd_str = WEEKDAY_VI.get(current_dt.weekday(), "")
     dt_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
-    
+    current_year = current_dt.year
+
     # Tính ngày âm lịch hiện tại
     try:
         ld, lm, ly, lleap = solar_to_lunar(current_dt.day, current_dt.month, current_dt.year)
@@ -108,31 +109,57 @@ def build_system_instruction(current_dt: datetime) -> str:
     instruction = f"""Bạn là trợ lý AI thông minh chuyên phân tích và chuẩn hóa tin nhắn nhắc lịch (Reminder) cho Telegram Bot tiếng Việt.
 
 THỜI GIAN HIỆN TẠI HỆ THỐNG:
-- Ngày giờ dương lịch: {dt_str} ({wd_str})
+- Ngày giờ dương lịch: {dt_str} ({wd_str}) - Năm hiện tại: {current_year}
 - Ngày âm lịch hiện tại: {lunar_str}
 
 NHIỆM VỤ CỦA BẠN:
 1. Phân loại tin nhắn (Intent):
-   - Nếu là yêu cầu tạo nhắc lịch/hẹn giờ/ghi nhớ công việc, hoặc thông báo có chứa deadline, hạn chót, ngày hẹn, lịch họp, kế hoạch công việc: "is_reminder": true
+   - Nếu là yêu cầu tạo nhắc lịch/hẹn giờ/ghi nhớ công việc, hoặc thông báo có chứa deadline, hạn chót, ngày hẹn, lịch họp, kế hoạch công việc, danh sách sinh nhật: "is_reminder": true
    - Nếu là lời chào hỏi đơn thuần, hỏi thăm, trò chuyện không có công việc: "is_reminder": false
 
-2. Xử lý nội dung (clean_message):
+2. XỬ LÝ ĐA LỊCH NHẮC (MULTI-REMINDERS / BATCH REMINDERS) - RẤT QUAN TRỌNG:
+   - Nếu tin nhắn chứa NHIỀU công việc, nhiều sự kiện, hoặc danh sách nhiều người cần nhắc (ví dụ danh sách sinh nhật của nhiều nhân viên/bạn bè, lịch trình nhiều đầu việc):
+     + BẠN PHẢI TÁCH THÀNH CÁC MỤC ĐỘC LẬP TRONG MẢNG "reminders".
+     + Đảm bảo trích xuất ĐẦY ĐỦ TẤT CẢ các mục trong danh sách, TUYỆT ĐỐI KHÔNG BỎ SÓT bất kỳ ai hay bất kỳ công việc nào.
+     + Với danh sách sinh nhật (ví dụ người dùng gửi bảng danh sách nhân viên có STT, mã nhân viên, họ tên, ngày sinh):
+       * "clean_message": "Sinh nhật <Họ và tên>" (Ví dụ: "Sinh nhật Nguyễn Thị Quỳnh"). Không cần đưa số điện thoại, mã nhân viên hay chức danh vào nội dung nhắc.
+       * Lấy ngày và tháng sinh (DD/MM) từ ngày sinh (bỏ qua năm sinh của người đó khi tính chu kỳ).
+       * Tần suất "repeat_type": "yearly" (hàng năm).
+       * Giờ nhắc: nếu không nói giờ cụ thể, mặc định 09:00 sáng.
+       * Tính năm nhắc kế tiếp:
+         - So sánh ngày sinh (DD/MM) với thời gian hiện tại ({dt_str}):
+         - Nếu ngày DD/MM trong năm nay {current_year} chưa tới (>= ngày hiện tại): đặt mốc là DD/MM/{current_year}.
+         - Nếu ngày DD/MM trong năm nay {current_year} đã trôi qua (< ngày hiện tại): đặt mốc là DD/MM/{current_year + 1}.
+       * "standard_syntax": "Sinh nhật <Họ và tên> lúc 09:00 ngày <DD/MM/YYYY> hàng năm"
+       * "is_meeting": false
+
+     + Với danh sách lịch họp / nhiều cuộc họp trong tin nhắn (ví dụ lịch tuần, thông báo các cuộc họp trong ngày/tuần):
+       * Tách riêng từng cuộc họp thành từng phần tử độc lập trong mảng "reminders".
+       * "clean_message": Tóm tắt nội dung cuộc họp, kèm địa điểm hoặc hình thức họp nếu có (Ví dụ: "Họp giao ban tuần tại Phòng họp 1", "Họp dự án AI qua Zoom").
+       * "is_meeting": true cho TẤT CẢ các mục cuộc họp này.
+       * "has_explicit_time": true nếu có giờ họp cụ thể (ví dụ 8h30, 14h...). Nếu không nói giờ, mặc định 09:00 sáng.
+       * "repeat_type": "none" nếu là cuộc họp cụ thể theo ngày; hoặc "weekly" nếu là lịch lặp hàng tuần (ví dụ "thứ 2 hàng tuần").
+       * "standard_syntax": "<Nội dung họp> lúc <HH:MM> ngày <DD/MM/YYYY>" (hoặc "<Nội dung họp> lúc <HH:MM> T2 hàng tuần" nếu lặp).
+   - Nếu tin nhắn chỉ có 1 lịch duy nhất:
+     + Mảng "reminders" chỉ chứa 1 phần tử tương ứng.
+
+3. Xử lý nội dung (clean_message):
    - Trích xuất nội dung cốt lõi của công việc cần làm hoặc cuộc họp cần nhớ.
    - Lọc bỏ các từ râu ria, xưng hô không cần thiết như: "Kính nhờ các anh", "nhớ nhắc anh/em/tao", "ê bot", "giúp tao", "nhé", "nha".
    - Nếu tin nhắn có "Deadline : DD/MM/YYYY" hoặc "Hạn chót" hoặc "Để đầu tháng 10... họp": tóm tắt hành động cần làm. Viết hoa chữ cái đầu.
 
-2.1 Nhận diện cuộc họp (is_meeting):
+4. Nhận diện cuộc họp (is_meeting):
    - "is_meeting": true chỉ khi nội dung là một cuộc họp/lịch gặp cần tham dự, ví dụ có "họp", "meeting", "lịch gặp đối tác".
-   - Deadline, công việc cá nhân, nhắc nộp báo cáo hoặc lời chào không phải cuộc họp thì "is_meeting": false.
+   - Deadline, công việc cá nhân, sinh nhật, nhắc nộp báo cáo hoặc lời chào không phải cuộc họp thì "is_meeting": false.
 
-3. QUY TẮC SUY LUẬN THỜI GIAN & FALLBACK 9H SÁNG / 16H CHIỀU:
+5. QUY TẮC SUY LUẬN THỜI GIAN & FALLBACK 9H SÁNG / 16H CHIỀU:
    a. Người dùng có nói giờ cụ thể (ví dụ 10h, 8h30 sáng, 4 rưỡi chiều):
       - Giữ nguyên giờ đó (chuyển sang định dạng HH:MM 24h).
       - "has_explicit_time": true
    b. Người dùng KHÔNG nói giờ cụ thể ("has_explicit_time": false):
       - Nếu là DEADLINE / HẠN CHÓT / BÁO CÁO / NỘP HỒ SƠ / BUỔI CHIỀU / CUỐI NGÀY:
         Mặc định chọn 16:00 chiều (hạn kết thúc ngày làm việc).
-      - Nếu là CUỘC HỌP / KẾ HOẠCH ĐẦU NGÀY / ĐẦU THÁNG / NGÀY MAI / NGÀY TƯƠNG LAI CHUNG CHUNG:
+      - Nếu là CUỘC HỌP / KẾ HOẠCH ĐẦU NGÀY / ĐẦU THÁNG / NGÀY MAI / SINH NHẬT / NGÀY TƯƠNG LAI CHUNG CHUNG:
         Mặc định chọn 09:00 sáng.
       - "Đầu tháng X/YYYY": tính là ngày 01 của tháng X/YYYY lúc 09:00 sáng.
       - Nếu là việc trong ngày hôm nay:
@@ -141,7 +168,7 @@ NHIỆM VỤ CỦA BẠN:
         + Nếu hiện tại từ 16:00 trở đi: nếu có chữ "tối nay" chọn 20:00; nếu không thì chuyển sang 09:00 sáng ngày hôm sau.
       - Nếu là ngày âm lịch (giỗ, rằm, mùng 1) mà không có giờ: mặc định chọn 09:00 sáng.
 
-4. CHUYỂN ĐỔI NGƯỢC THÀNH CÚ PHÁP CHUẨN CỦA BOT ("standard_syntax"):
+6. CHUYỂN ĐỔI NGƯỢC THÀNH CÚ PHÁP CHUẨN CỦA BOT ("standard_syntax"):
    Bot hỗ trợ các cú pháp chuẩn sau:
    - Dương lịch 1 lần: "<Nội dung> lúc <HH:MM> ngày <DD/MM/YYYY>"
    - Dương lịch lặp lại:
@@ -158,13 +185,17 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 Bắt buộc trả về đúng định dạng JSON thuần tuý (JSON object), không thêm markdown block ```json hay bất kỳ chữ nào khác ngoài JSON:
 {{
   "is_reminder": true hoặc false,
-  "clean_message": "Nội dung việc cần làm",
-  "standard_syntax": "Chuỗi cú pháp chuẩn để nạp vào bot",
-  "has_explicit_time": true hoặc false,
-  "is_meeting": true hoặc false,
-  "suggested_slot": "morning_9h" | "afternoon_16h" | "exact" | "other",
-  "repeat_type": "none" | "daily" | "weekly" | "monthly" | "yearly" | "weekday" | "weekend",
-  "is_lunar": true hoặc false,
+  "reminders": [
+    {{
+      "clean_message": "Nội dung việc cần làm",
+      "standard_syntax": "Chuỗi cú pháp chuẩn để nạp vào bot",
+      "has_explicit_time": true hoặc false,
+      "is_meeting": true hoặc false,
+      "suggested_slot": "morning_9h" | "afternoon_16h" | "exact" | "other",
+      "repeat_type": "none" | "daily" | "weekly" | "monthly" | "yearly" | "weekday" | "weekend",
+      "is_lunar": true hoặc false
+    }}
+  ],
   "reply_text": "Câu trả lời thân thiện nếu is_reminder là false, ngược lại để null"
 }}
 """
@@ -181,6 +212,51 @@ def _clean_json_response(raw_text: str) -> str:
     if raw_text.endswith("```"):
         raw_text = raw_text[:-3]
     return raw_text.strip()
+
+
+def _normalize_llm_result(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Chuẩn hóa kết quả từ LLM, đảm bảo luôn có mảng 'reminders' và các trường root tương thích ngược."""
+    if not isinstance(data, dict):
+        return data
+
+    if data.get("is_reminder"):
+        reminders = data.get("reminders")
+        if not isinstance(reminders, list) or len(reminders) == 0:
+            # Fallback nếu LLM trả về flat object dạng cũ
+            item = {
+                "clean_message": data.get("clean_message") or "",
+                "standard_syntax": data.get("standard_syntax") or "",
+                "has_explicit_time": bool(data.get("has_explicit_time")),
+                "is_meeting": bool(data.get("is_meeting")),
+                "suggested_slot": data.get("suggested_slot", "other"),
+                "repeat_type": data.get("repeat_type", "none"),
+                "is_lunar": bool(data.get("is_lunar")),
+            }
+            data["reminders"] = [item]
+        else:
+            # Làm sạch từng item trong reminders
+            valid_items = []
+            for item in reminders:
+                if isinstance(item, dict) and (item.get("standard_syntax") or item.get("clean_message")):
+                    valid_items.append({
+                        "clean_message": item.get("clean_message") or "",
+                        "standard_syntax": item.get("standard_syntax") or "",
+                        "has_explicit_time": bool(item.get("has_explicit_time")),
+                        "is_meeting": bool(item.get("is_meeting")),
+                        "suggested_slot": item.get("suggested_slot", "other"),
+                        "repeat_type": item.get("repeat_type", "none"),
+                        "is_lunar": bool(item.get("is_lunar")),
+                    })
+            data["reminders"] = valid_items
+
+        # Đảm bảo root có dữ liệu của item đầu tiên (để tương thích ngược)
+        if data["reminders"]:
+            first = data["reminders"][0]
+            for field in ["clean_message", "standard_syntax", "has_explicit_time", "is_meeting", "suggested_slot", "repeat_type", "is_lunar"]:
+                if field not in data or data[field] is None:
+                    data[field] = first.get(field)
+
+    return data
 
 
 async def _call_gemini_api(client: httpx.AsyncClient, model: str, api_key: str, text: str, system_prompt: str, timeout_sec: float) -> Optional[Dict[str, Any]]:
@@ -209,7 +285,7 @@ async def _call_gemini_api(client: httpx.AsyncClient, model: str, api_key: str, 
         try:
             if attempt == 0:
                 safe_print(f"🤖 [GEMINI REQUEST] Model: {model}")
-                safe_print(f"   📥 Nội dung gửi: '{text}'")
+                safe_print(f"   📥 Nội dung gửi: '{text[:150]}...' (độ dài: {len(text)} ký tự)" if len(text) > 150 else f"   📥 Nội dung gửi: '{text}'")
             else:
                 safe_print(f"🔄 [GEMINI RETRY] Thử lại model {model} (lần 2)...")
 
@@ -241,7 +317,8 @@ async def _call_gemini_api(client: httpx.AsyncClient, model: str, api_key: str, 
             safe_print(f"✅ [GEMINI RESPONSE] Model: {model}")
             safe_print(f"   📤 Phản hồi: {clean_json}")
 
-            return json.loads(clean_json)
+            parsed = json.loads(clean_json)
+            return _normalize_llm_result(parsed)
 
         except httpx.TimeoutException:
             safe_print(f"⏱️ [GEMINI TIMEOUT] Model {model} quá thời gian chờ sau {timeout_sec}s.")
@@ -294,7 +371,8 @@ async def _call_openrouter_api(client: httpx.AsyncClient, model: str, api_key: s
         safe_print(f"✅ [OPENROUTER RESPONSE] Model: {model}")
         safe_print(f"   📤 Phản hồi: {clean_json}")
 
-        return json.loads(clean_json)
+        parsed = json.loads(clean_json)
+        return _normalize_llm_result(parsed)
 
     except httpx.TimeoutException:
         safe_print(f"⏱️ [OPENROUTER TIMEOUT] Model {model} quá thời gian chờ sau {timeout_sec}s.")
