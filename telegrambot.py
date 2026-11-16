@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -192,6 +193,46 @@ def build_llm_meeting_reminders(message, remind_time, repeat_type):
         (f"Nhắc trước 15 phút: {message}", remind_time - timedelta(minutes=15), repeat_type),
         (f"Nhắc trước 5 phút: {message}", remind_time - timedelta(minutes=5), repeat_type),
     ]
+
+
+def _display_name(first_name=None, last_name=None, title=None, username=None):
+    name = title or " ".join(p for p in (first_name, last_name) if p)
+    return name or (f"@{username}" if username else None)
+
+
+def get_forward_sender_name(message):
+    """Trả về tên người/kênh gốc của tin nhắn được forward, None nếu không phải tin forward.
+
+    Hỗ trợ cả field cũ (forward_from...) lẫn forward_origin (Bot API 7.0+, PTB 20.7
+    chưa map nên nằm trong api_kwargs).
+    """
+    name = None
+    origin = getattr(message, "forward_origin", None) or (message.api_kwargs or {}).get("forward_origin")
+    if origin:
+        if not isinstance(origin, dict):
+            origin = origin.to_dict()
+        user = origin.get("sender_user") or {}
+        chat = origin.get("sender_chat") or origin.get("chat") or {}
+        name = (
+            _display_name(user.get("first_name"), user.get("last_name"), username=user.get("username"))
+            or origin.get("sender_user_name")  # người gửi ẩn tài khoản khi forward
+            or _display_name(title=chat.get("title"), username=chat.get("username"))
+            or origin.get("author_signature")
+        )
+    else:
+        user = getattr(message, "forward_from", None)
+        chat = getattr(message, "forward_from_chat", None)
+        if user:
+            name = _display_name(user.first_name, user.last_name, username=user.username)
+        elif getattr(message, "forward_sender_name", None):
+            name = message.forward_sender_name
+        elif chat:
+            name = _display_name(title=chat.title, username=chat.username)
+        elif getattr(message, "forward_date", None) is None:
+            return None
+
+    name = re.sub(r"[<>&]", "", name or "").strip()
+    return name or "người khác"
 
 
 # =========================
@@ -1060,6 +1101,9 @@ async def send_help(update: Update):
 async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
+    # Tin forward: parse thời gian trên nội dung gốc, sau đó mới gắn tiền tố vào nội dung lịch
+    _fw_name = get_forward_sender_name(update.message)
+    fw_prefix = f"FW from {_fw_name}: " if _fw_name else ""
     try:
         ensure_connection()
     except Exception as e:
@@ -1305,6 +1349,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _fallback_hint = False
     _llm_auto_slot_note = None
     _llm_meeting = False
+    _llm_parsed = False
 
     # Thử parse nhiều ngày/thứ trong 1 lệnh
     if not is_lunar:
@@ -1312,6 +1357,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if multi and len(multi) >= 2:
             inserted = []
             for (m_msg, m_time, m_rtype) in multi:
+                m_msg = fw_prefix + m_msg
                 cursor.execute(
                     "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
                     (user_id, m_msg, m_time),
@@ -1404,6 +1450,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         m_rtype = item.get("repeat_type") or "none"
                         m_lunar, m_ld, m_lm, m_ly, m_leap = False, None, None, None, False
 
+                    m_msg = fw_prefix + m_msg
                     is_meeting_item = bool(item.get("is_meeting"))
                     to_add = (
                         build_llm_meeting_reminders(m_msg, m_time, m_rtype)
@@ -1483,6 +1530,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _llm_auto_slot_note = f"\n💡 <i>(Em đã tự động đặt vào lúc {slot_desc} theo ngữ cảnh cho anh)</i>"
 
                 _llm_meeting = parsed and bool(single_item.get("is_meeting"))
+                _llm_parsed = parsed
 
     # Fallback cuối cùng nếu cả regex và LLM không parse được
     if not parsed:
@@ -1502,7 +1550,11 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             repeat_type = "none"
             _fallback_hint = True
 
-    text_repeat = format_repeat_type(repeat_type) if repeat_type != "none" else ""
+    # Tin forward hoặc tin phải nhờ LLM: giữ nguyên văn bản gốc, chỉ lấy thời gian từ kết quả bóc tách
+    if fw_prefix or _llm_parsed:
+        message = fw_prefix + text
+
+    text_repeat =format_repeat_type(repeat_type) if repeat_type != "none" else ""
 
     wd = weekday_vi(remind_time)
     solar_str = f"{wd}, {remind_time.strftime('%d-%m-%Y %H:%M')}"
@@ -1516,7 +1568,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_reply = (
         f"✅ <b>Dạ em đã thêm vào lịch của anh</b>\n"
         f"🕒 <b>Thời gian:</b> <i>{time_display}</i>\n"
-        f"📌 <b>Nội dung:</b> <i>{message}</i>\n"
+        f"📌 <b>Nội dung:</b> <i>{html.escape(message)}</i>\n"
     )
     if repeat_type != "none":
         text_reply += f"🔁 <b>Tần suất:</b> {text_repeat}"
