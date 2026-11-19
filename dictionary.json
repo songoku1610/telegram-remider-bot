@@ -1,0 +1,615 @@
+{
+  "_meta": {
+    "version": "1.1.0",
+    "description": "Từ điển chuẩn hoá cụm từ thời gian tiếng Việt cho bot nhắc lịch. Đưa câu tự do về cú pháp chuẩn mà parse_message() đã hiểu: '<nội dung> lúc <HH:MM> <ngày DD/MM/YYYY | thứ N [tuần này|tuần sau] | hôm nay | mai> [lặp]'.",
+    "input_normalization": "Trước khi tra từ điển: unicodedata.normalize('NFKC'), lower(), gộp khoảng trắng (giống hàm normalize() trong telegrambot.py). Mọi pattern đều giả định chữ thường.",
+    "matching": {
+      "phrases": "Khớp theo ranh giới từ: r'(?<!\\w)' + re.escape(phrase) + r'(?!\\w)'. Sắp xếp toàn bộ cụm từ theo độ dài giảm dần, cụm dài khớp trước (ví dụ 'sáng mai' trước 'mai').",
+      "regex_rules": "Chạy theo đúng thứ tự stage trong 'pipeline', trong mỗi stage chạy theo thứ tự xuất hiện trong mảng. Rule có 'replace' thì dùng re.sub(pattern, replace, text). Rule có 'compute' thì gọi hàm tính tương ứng với match object (xem 'compute_types')."
+    },
+    "pipeline": [
+      "1. normalize: NFKC + lower + gộp khoảng trắng",
+      "2. phrases: thay toàn bộ nhóm trong 'phrases' và 'holidays' (cụm dài trước)",
+      "3. regex stage 'weekday'",
+      "4. regex stage 'number_words' (đổi số bằng chữ sang chữ số khi đứng trước đơn vị thời gian)",
+      "5. regex stage 'relative' (N phút/giờ/ngày/tuần/tháng nữa)",
+      "6. regex stage 'repeat' (chạy trước 'date' để '3 ngày 1 lần' không bị hiểu thành 'ngày 1')",
+      "7. regex stage 'date' (BỎ QUA nếu câu có 'âm lịch'/'lịch âm', để parse_lunar_reminder xử lý)",
+      "8. regex stage 'time'",
+      "9. computed_phrases (đầu tháng, cuối tuần này, ngày kia, ...)",
+      "10. periods: nếu đã có HH:MM thì áp 'hour_shift'; nếu chưa có HH:MM thì dùng 'default_time' của buổi",
+      "11. default_time_by_keyword: nếu vẫn chưa có giờ thì chọn giờ theo từ khoá trong nội dung",
+      "12. assemble: gom các token đã nhận diện (theo 'role'), xoá chúng khỏi câu, phần còn lại là nội dung. dictionary_parser.py tính thẳng datetime (không đi qua parse_message) và trả thêm standard_syntax '<nội dung> lúc <HH:MM> ngày <DD/MM/YYYY> [lặp]' để log. Câu âm lịch trả standard_syntax '<nội dung> lúc <HH:MM> ngày <DD/MM> âm lịch [lặp]' để parse_lunar_reminder() xử lý."
+    ],
+    "safety": "Bước từ điển trả None (để rơi xuống LLM) khi: câu dài > 300 ký tự hoặc > 3 dòng; có >= 2 giờ khác nhau; trộn nhiều ngày với nhiều thứ; không có mốc thời gian nào (giờ, ngày, thứ, hôm nay/mai, N phút nữa, lặp); hoặc nội dung còn lại rỗng.",
+    "roles": {
+      "time": "giờ trong ngày, dạng HH:MM",
+      "date": "ngày cụ thể, dạng 'ngày DD/MM/YYYY'",
+      "day_ref": "hôm nay / mai",
+      "weekday": "thứ N / chủ nhật (kèm tuần này / tuần sau nếu có)",
+      "relative": "N phút nữa / N giờ nữa",
+      "repeat": "hàng ngày / hàng tuần / hàng tháng / hàng năm / ngày thường / cuối tuần / mỗi N đơn vị",
+      "period": "buổi trong ngày (sáng, trưa, chiều, tối, đêm)",
+      "lunar": "đánh dấu âm lịch",
+      "pre": "bước tiền xử lý, không phải token thời gian"
+    },
+    "output_format": {
+      "time": "HH:MM (24h, có số 0 đứng đầu)",
+      "date": "ngày DD/MM/YYYY (có số 0 đứng đầu)",
+      "lunar_date": "ngày DD/MM âm lịch"
+    },
+    "compute_types": {
+      "number_word": "Đổi số bằng chữ (group) sang chữ số theo bảng 'number_words'. Nếu có 'output' thì format theo đó với {n}.",
+      "relative_minutes": "Tổng số phút = hours*60 + minutes (+30 nếu half=true). Trả về '{N} phút nữa'.",
+      "relative_days": "now + N ngày (N lấy từ 'days' hoặc group 'days_group'). Trả về 'ngày DD/MM/YYYY'.",
+      "relative_weeks": "now + 7*N ngày. Trả về 'ngày DD/MM/YYYY'.",
+      "relative_months": "now + relativedelta(months=N). Trả về 'ngày DD/MM/YYYY'.",
+      "relative_years": "now + relativedelta(years=N). Trả về 'ngày DD/MM/YYYY'.",
+      "relative_en": "Tiếng Anh 'in N minutes/hours/days/weeks': minutes/hours -> '{N} phút nữa' / '{N} giờ nữa'; days/weeks -> 'ngày DD/MM/YYYY'.",
+      "infer_year": "Ngày DD/MM không có năm: nếu DD/MM năm nay >= hôm nay thì dùng năm nay, ngược lại dùng năm sau. Bỏ qua nếu ngày/tháng không hợp lệ. Trả về 'ngày DD/MM/YYYY'.",
+      "next_day_of_month": "Chỉ có ngày (mùng 5, ngày 20): tháng này nếu ngày đó >= hôm nay, ngược lại tháng sau. Nếu tháng không có ngày đó (31/11) thì bỏ qua. Trả về 'ngày DD/MM/YYYY'.",
+      "day_of_month": "Ngày D của tháng (hiện tại + month_offset). month_offset lấy từ bảng 'offset_words' theo group. Trả về 'ngày DD/MM/YYYY'.",
+      "month_day": "Ngày 'day' (số, hoặc 'last' = ngày cuối tháng) của tháng chỉ định. Nếu có month_group/year_group thì dùng tháng/năm đó (không có năm thì áp quy tắc infer_year). Nếu không có tháng thì dùng tháng hiện tại + month_offset; roll_forward=true nghĩa là kết quả đã qua thì đẩy sang tháng sau. Trả về 'ngày DD/MM/YYYY'.",
+      "week_day": "Thứ 'weekday' (0=T2 … 6=CN) của tuần (tuần hiện tại + week_offset), tuần bắt đầu thứ 2 (giống get_weekday()). Có thể lấy weekday từ group 'weekday_group' ('thứ N' -> N-2, 'chủ nhật' -> 6). roll_forward=true: đã qua thì cộng 7 ngày. Trả về 'ngày DD/MM/YYYY'.",
+      "year_day": "Ngày day/month của năm (hiện tại + year_offset). roll_forward=true: đã qua thì sang năm sau. Trả về 'ngày DD/MM/YYYY'.",
+      "time_minus": "'H giờ kém M' = (H-1):(60-M). Trả về 'HH:MM'.",
+      "ampm": "am: 12 -> 0, giữ nguyên các giờ khác; pm: +12 nếu giờ < 12. Trả về 'HH:MM'.",
+      "same_time": "Cùng giờ phút với hiện tại, cộng thêm 'days' ngày. Trả về 'HH:MM ngày DD/MM/YYYY'.",
+      "lunar_new_year_eve": "Ngày cuối của tháng 12 âm lịch (29 hoặc 30, tính bằng lunarcalendar). Trả về 'ngày DD/12 âm lịch'."
+    },
+    "examples_now": "Kết quả của các ví dụ compute được tính với now = 2026-11-18 09:00 (Thứ 4)."
+  },
+
+  "number_words": {
+    "một": 1, "mốt": 1, "hai": 2, "ba": 3, "bốn": 4, "năm": 5, "sáu": 6,
+    "bảy": 7, "bẩy": 7, "tám": 8, "chín": 9, "mười": 10,
+    "mười một": 11, "mười hai": 12, "mười lăm": 15, "hai mươi": 20,
+    "hai lăm": 25, "hai mươi lăm": 25, "ba mươi": 30,
+    "bốn lăm": 45, "bốn mươi lăm": 45
+  },
+
+  "offset_words": {
+    "này": 0, "tháng này": 0,
+    "sau": 1, "tới": 1, "tháng sau": 1, "tháng tới": 1,
+    "sau nữa": 2, "tháng sau nữa": 2
+  },
+
+  "phrases": {
+    "weekday": {
+      "role": "weekday",
+      "entries": [
+        { "to": "thứ 2", "from": ["thứ hai", "thu hai", "thứ2", "thu 2", "thu2", "t.2", "monday"] },
+        { "to": "thứ 3", "from": ["thứ ba", "thu ba", "thứ3", "thu 3", "thu3", "t.3", "tuesday"] },
+        { "to": "thứ 4", "from": ["thứ tư", "thứ bốn", "thu tu", "thứ4", "thu 4", "thu4", "t.4", "wednesday"] },
+        { "to": "thứ 5", "from": ["thứ năm", "thu nam", "thứ5", "thu 5", "thu5", "t.5", "thursday"] },
+        { "to": "thứ 6", "from": ["thứ sáu", "thu sau", "thứ6", "thu 6", "thu6", "t.6", "friday"] },
+        { "to": "thứ 7", "from": ["thứ bảy", "thứ bẩy", "thu bay", "thứ7", "thu 7", "thu7", "t.7", "saturday"] },
+        { "to": "chủ nhật", "from": ["chu nhat", "chủnhật", "chúa nhật", "chua nhat", "cn", "sunday"] }
+      ]
+    },
+
+    "day_ref": {
+      "role": "day_ref",
+      "entries": [
+        { "to": "hôm nay", "from": ["hom nay", "ngày hôm nay", "ngay hom nay", "bữa nay", "bua nay", "today"] },
+        { "to": "mai", "from": ["ngày mai", "ngay mai", "hôm sau", "hom sau", "ngày hôm sau", "ngay hom sau", "tomorrow"] }
+      ]
+    },
+
+    "week_month_year_ref": {
+      "role": "weekday",
+      "note": "Chuẩn hoá về dạng parse_time() đã hiểu ('tuần sau', 'tuần này'). 'tuần sau nữa' xử lý ở regex stage 'weekday'.",
+      "entries": [
+        { "to": "tuần sau", "from": ["tuần tới", "tuan toi", "tuan sau", "tuần kế tiếp", "tuần kế", "next week"] },
+        { "to": "tuần này", "from": ["tuan nay", "this week"] },
+        { "to": "tháng sau", "from": ["tháng tới", "thang toi", "thang sau", "next month"] },
+        { "to": "tháng này", "from": ["thang nay", "this month"] },
+        { "to": "năm sau", "from": ["năm tới", "nam toi", "nam sau", "sang năm", "next year"] },
+        { "to": "năm nay", "from": ["nam nay", "this year"] }
+      ]
+    },
+
+    "period": {
+      "role": "period",
+      "note": "Chỉ chuyển dạng không dấu khi đi thành cụm, vì 'sang', 'toi' đứng riêng là từ khác ('sang' = đi sang, 'toi' = tôi).",
+      "entries": [
+        { "to": "sáng mai", "from": ["sang mai"] },
+        { "to": "trưa mai", "from": ["trua mai"] },
+        { "to": "chiều mai", "from": ["chieu mai"] },
+        { "to": "tối mai", "from": ["toi mai"] },
+        { "to": "sáng hôm nay", "from": ["sáng nay", "sang nay"] },
+        { "to": "trưa hôm nay", "from": ["trưa nay", "trua nay"] },
+        { "to": "chiều hôm nay", "from": ["chiều nay", "chieu nay"] },
+        { "to": "tối hôm nay", "from": ["tối nay", "toi nay"] },
+        { "to": "đêm hôm nay", "from": ["đêm nay", "dem nay"] },
+        { "to": "sáng", "from": ["buổi sáng", "buoi sang"] },
+        { "to": "trưa", "from": ["buổi trưa", "buoi trua"] },
+        { "to": "chiều", "from": ["buổi chiều", "buoi chieu", "xế chiều"] },
+        { "to": "tối", "from": ["buổi tối", "buoi toi"] },
+        { "to": "đêm", "from": ["ban đêm", "buổi đêm"] }
+      ]
+    },
+
+    "relative_fixed": {
+      "role": "relative",
+      "entries": [
+        { "to": "30 phút nữa", "from": ["nửa tiếng nữa", "nửa giờ nữa", "nửa tiếng sau", "nua tieng nua", "lát nữa", "lat nua", "một lát nữa", "chút nữa", "chut nua", "tí nữa", "ti nua"] },
+        { "to": "15 phút nữa", "from": ["một khắc nữa", "mot khac nua"] },
+        { "to": "1 giờ nữa", "from": ["một tiếng nữa", "mot tieng nua", "1 tiếng nữa", "in an hour"] }
+      ]
+    },
+
+    "lunar_marker": {
+      "role": "lunar",
+      "entries": [
+        { "to": "âm lịch", "from": ["am lich", "lich am", "âl", "theo lịch âm", "theo âm lịch", "lunar"] },
+        { "to": "tháng 1", "from": ["tháng giêng", "thang gieng"] },
+        { "to": "tháng 12", "from": ["tháng chạp", "thang chap"] },
+        { "to": "ngày 15", "from": ["rằm"] }
+      ]
+    },
+
+    "repeat": {
+      "role": "repeat",
+      "note": "Đích là các từ khoá mà parse_message()/normalize_repeat() và extract_custom_repeat() đã hỗ trợ.",
+      "entries": [
+        { "to": "hàng ngày", "from": ["hằng ngày", "mỗi ngày", "moi ngay", "mọi ngày", "ngày nào cũng", "ngay nao cung", "every day", "everyday"] },
+        { "to": "hàng tuần", "from": ["hằng tuần", "mỗi tuần", "moi tuan", "tuần nào cũng", "tuan nao cung", "every week"] },
+        { "to": "hàng tháng", "from": ["hằng tháng", "mỗi tháng", "moi thang", "tháng nào cũng", "thang nao cung", "every month"] },
+        { "to": "hàng năm", "from": ["hằng năm", "mỗi năm", "moi nam", "năm nào cũng", "nam nao cung", "thường niên", "every year", "annually"] },
+        { "to": "ngày thường", "from": ["ngày làm việc", "các ngày làm việc", "ngày trong tuần", "các ngày trong tuần", "mỗi ngày trong tuần", "các ngày thường", "mỗi ngày làm việc", "từ thứ 2 đến thứ 6", "thứ 2 đến thứ 6", "thứ 2 - thứ 6", "thứ 2-thứ 6", "t2-t6", "t2 - t6", "t2 đến t6", "weekdays"] },
+        { "to": "weekend", "from": ["mỗi cuối tuần", "hàng cuối tuần", "cuối tuần nào cũng", "các ngày cuối tuần", "cuối tuần hàng tuần", "weekends"] },
+        { "to": "mỗi 2 ngày", "from": ["cách ngày", "cach ngay", "ngày cách ngày", "cách một ngày"] },
+        { "to": "mỗi 2 tuần", "from": ["cách tuần", "cach tuan", "tuần cách tuần"] },
+        { "to": "mỗi 3 tháng", "from": ["hàng quý", "hằng quý", "mỗi quý", "quý nào cũng", "quarterly"] },
+        { "to": "mỗi 6 tháng", "from": ["nửa năm một lần", "nửa năm 1 lần", "mỗi nửa năm"] }
+      ]
+    }
+  },
+
+  "holidays": {
+    "role": "date",
+    "note": "Dương lịch chuyển về 'ngày DD/MM' rồi để rule 'date_dd_mm_infer_year' tự suy năm. Âm lịch chuyển về 'ngày DD/MM âm lịch' để parse_lunar_reminder() xử lý.",
+    "solar": [
+      { "to": "ngày 01/01", "from": ["tết dương lịch", "tết tây", "năm mới dương lịch", "new year"] },
+      { "to": "ngày 14/02", "from": ["valentine", "lễ tình nhân", "ngày lễ tình nhân"] },
+      { "to": "ngày 08/03", "from": ["quốc tế phụ nữ", "ngày quốc tế phụ nữ"] },
+      { "to": "ngày 30/04", "from": ["giải phóng miền nam", "ngày thống nhất", "lễ 30/4"] },
+      { "to": "ngày 01/05", "from": ["quốc tế lao động", "ngày quốc tế lao động", "lễ 1/5"] },
+      { "to": "ngày 01/06", "from": ["quốc tế thiếu nhi", "tết thiếu nhi", "ngày thiếu nhi"] },
+      { "to": "ngày 02/09", "from": ["quốc khánh", "ngày quốc khánh", "lễ 2/9"] },
+      { "to": "ngày 20/10", "from": ["phụ nữ việt nam", "ngày phụ nữ việt nam"] },
+      { "to": "ngày 31/10", "from": ["halloween"] },
+      { "to": "ngày 20/11", "from": ["nhà giáo việt nam", "ngày nhà giáo", "ngày nhà giáo việt nam"] },
+      { "to": "ngày 24/12", "from": ["đêm giáng sinh", "đêm noel", "christmas eve"] },
+      { "to": "ngày 25/12", "from": ["giáng sinh", "lễ giáng sinh", "noel", "christmas"] }
+    ],
+    "lunar": [
+      { "to": "ngày 01/01 âm lịch", "from": ["tết nguyên đán", "mùng 1 tết", "mồng 1 tết", "tết âm lịch", "tết ta", "tết"] },
+      { "to": "ngày 02/01 âm lịch", "from": ["mùng 2 tết", "mồng 2 tết"] },
+      { "to": "ngày 03/01 âm lịch", "from": ["mùng 3 tết", "mồng 3 tết"] },
+      { "to": "ngày 15/01 âm lịch", "from": ["rằm tháng giêng", "tết nguyên tiêu", "tết thượng nguyên"] },
+      { "to": "ngày 10/03 âm lịch", "from": ["giỗ tổ hùng vương", "giỗ tổ"] },
+      { "to": "ngày 05/05 âm lịch", "from": ["tết đoan ngọ", "tết đoan dương", "giết sâu bọ"] },
+      { "to": "ngày 15/07 âm lịch", "from": ["lễ vu lan", "vu lan", "rằm tháng bảy", "rằm tháng 7", "xá tội vong nhân"] },
+      { "to": "ngày 15/08 âm lịch", "from": ["tết trung thu", "trung thu", "rằm tháng tám", "rằm tháng 8"] },
+      { "to": "ngày 23/12 âm lịch", "from": ["ông công ông táo", "ông táo", "tiễn táo quân", "táo quân về trời"] }
+    ],
+    "lunar_computed": [
+      { "from": ["giao thừa", "tất niên", "đêm giao thừa", "ba mươi tết", "30 tết"], "compute": { "type": "lunar_new_year_eve" } }
+    ]
+  },
+
+  "regex_rules": [
+    {
+      "id": "weekday_short",
+      "stage": "weekday",
+      "role": "weekday",
+      "pattern": "(?<!\\w)(?:t|thứ\\s*)([2-7])(?!\\w)",
+      "replace": "thứ \\1",
+      "examples": [ { "in": "họp t6", "out": "họp thứ 6" }, { "in": "thứ6 9h", "out": "thứ 6 9h" } ]
+    },
+    {
+      "id": "weekday_this",
+      "stage": "weekday",
+      "role": "weekday",
+      "pattern": "(?<!\\w)(thứ [2-7]|chủ nhật)\\s+này(?!\\w)",
+      "replace": "\\1 tuần này",
+      "examples": [ { "in": "thứ 6 này", "out": "thứ 6 tuần này" } ]
+    },
+    {
+      "id": "weekday_upcoming",
+      "stage": "weekday",
+      "role": "weekday",
+      "note": "'thứ 6 tới' = thứ 6 gần nhất sắp tới; parse_time() tự chọn lần gần nhất trong tương lai khi không có 'tuần này/sau'.",
+      "pattern": "(?<!\\w)(thứ [2-7]|chủ nhật)\\s+(?:sắp tới|tới|toi)(?!\\w)(?!\\s*nữa)",
+      "replace": "\\1",
+      "examples": [ { "in": "thứ 6 tới", "out": "thứ 6" } ]
+    },
+    {
+      "id": "weekday_week_after_next",
+      "stage": "weekday",
+      "role": "date",
+      "pattern": "(?<!\\w)(thứ [2-7]|chủ nhật)\\s+tuần\\s+sau\\s+nữa(?!\\w)",
+      "compute": { "type": "week_day", "weekday_group": 1, "week_offset": 2 },
+      "examples": [ { "in": "thứ 6 tuần sau nữa", "out": "ngày 04/12/2026" } ]
+    },
+    {
+      "id": "weekday_every",
+      "stage": "weekday",
+      "role": "weekday+repeat",
+      "pattern": "(?<!\\w)(?:vào mỗi|vào các|mỗi|mọi|các)\\s+((?:sáng|trưa|chiều|tối|đêm)\\s+)?(thứ [2-7]|chủ nhật)(?!\\w)",
+      "replace": "\\1\\2 hàng tuần",
+      "examples": [ { "in": "mỗi thứ 2", "out": "thứ 2 hàng tuần" }, { "in": "các chủ nhật", "out": "chủ nhật hàng tuần" }, { "in": "mỗi sáng thứ 2", "out": "sáng thứ 2 hàng tuần" } ]
+    },
+
+    {
+      "id": "number_word_before_unit",
+      "stage": "number_words",
+      "role": "pre",
+      "note": "Với ngày/tuần/tháng/năm chỉ đổi khi theo sau là 'nữa/sau/tới/một lần' để không làm hỏng câu kiểu 'một ngày đẹp trời'.",
+      "pattern": "(?<!\\w)(mười một|mười hai|mười lăm|mười|hai mươi lăm|hai mươi|hai lăm|ba mươi|bốn mươi lăm|bốn lăm|một|hai|ba|bốn|năm|sáu|bảy|bẩy|tám|chín)(?=\\s+(?:(?:phút|phut|tiếng|tieng|giờ|gio|rưỡi|ruoi)(?!\\w)|(?:ngày|ngay|tuần|tuan|tháng|thang|năm|nam)\\s+(?:nữa|nua|sau|tới|toi|một lần|1 lần)(?!\\w)))",
+      "compute": { "type": "number_word", "group": 1 },
+      "examples": [ { "in": "hai tiếng nữa", "out": "2 tiếng nữa" }, { "in": "ba giờ chiều", "out": "3 giờ chiều" }, { "in": "mười lăm phút nữa", "out": "15 phút nữa" } ]
+    },
+    {
+      "id": "number_word_after_kem",
+      "stage": "number_words",
+      "role": "pre",
+      "pattern": "(?<!\\w)(kém|kem)\\s+(mười lăm|mười|năm|hai mươi lăm|hai mươi|hai lăm)(?!\\w)",
+      "compute": { "type": "number_word", "group": 2, "output": "kém {n}" },
+      "examples": [ { "in": "8 giờ kém mười lăm", "out": "8 giờ kém 15" } ]
+    },
+
+    {
+      "id": "rel_hours_half",
+      "stage": "relative",
+      "role": "relative",
+      "pattern": "(?<!\\w)(\\d{1,2})\\s*(?:tiếng|tieng|giờ|gio|h)\\s*(?:rưỡi|ruoi)\\s+(?:nữa|nua|sau)(?!\\w)",
+      "compute": { "type": "relative_minutes", "hours_group": 1, "half": true },
+      "examples": [ { "in": "1 tiếng rưỡi nữa", "out": "90 phút nữa" } ]
+    },
+    {
+      "id": "rel_hours_minutes",
+      "stage": "relative",
+      "role": "relative",
+      "pattern": "(?<!\\w)(\\d{1,2})\\s*(?:tiếng|tieng|giờ|gio|h)\\s*(\\d{1,2})\\s*(?:phút|phut|ph|p)?\\s+(?:nữa|nua|sau)(?!\\w)",
+      "compute": { "type": "relative_minutes", "hours_group": 1, "minutes_group": 2 },
+      "examples": [ { "in": "1 tiếng 15 phút nữa", "out": "75 phút nữa" } ]
+    },
+    {
+      "id": "rel_minutes",
+      "stage": "relative",
+      "role": "relative",
+      "pattern": "(?<!\\w)(\\d{1,4})\\s*(?:phút|phut|ph|p|')\\s*(?:nữa|nua|sau|tới|toi)(?!\\w)",
+      "replace": "\\1 phút nữa",
+      "examples": [ { "in": "15p nữa", "out": "15 phút nữa" }, { "in": "20 phut nua", "out": "20 phút nữa" } ]
+    },
+    {
+      "id": "rel_hours",
+      "stage": "relative",
+      "role": "relative",
+      "note": "'2 giờ sau' thường là 'sau 2 tiếng'. Nếu muốn coi là 2h chiều thì bỏ 'sau' khỏi pattern.",
+      "pattern": "(?<!\\w)(?<!thứ )(\\d{1,2})\\s*(?:tiếng|tieng|giờ|gio|h)\\s*(?:nữa|nua|sau)(?!\\w)",
+      "replace": "\\1 giờ nữa",
+      "examples": [ { "in": "2 tiếng nữa", "out": "2 giờ nữa" }, { "in": "3h nua", "out": "3 giờ nữa" } ]
+    },
+    {
+      "id": "rel_days",
+      "stage": "relative",
+      "role": "date",
+      "pattern": "(?<!\\w)(?<!thứ )(?<!ngày )(?<!ngay )(?<!mùng )(?<!mồng )(?<!mung )(?<!mong )(\\d{1,3})\\s*(?:ngày|ngay)\\s*(?:nữa|nua|sau|tới|toi)(?!\\w)",
+      "compute": { "type": "relative_days", "days_group": 1 },
+      "examples": [ { "in": "3 ngày nữa", "out": "ngày 21/11/2026" } ]
+    },
+    {
+      "id": "rel_weeks",
+      "stage": "relative",
+      "role": "date",
+      "note": "Lookbehind loại 'thứ 6 tuần sau', 'ngày 5 tháng sau' (số ở đó là thứ/ngày, không phải số lượng).",
+      "pattern": "(?<!\\w)(?<!thứ )(?<!ngày )(?<!ngay )(?<!mùng )(?<!mồng )(?<!mung )(?<!mong )(\\d{1,2})\\s*(?:tuần|tuan)\\s*(?:nữa|nua|sau|tới|toi)(?!\\w)",
+      "compute": { "type": "relative_weeks", "group": 1 },
+      "examples": [ { "in": "2 tuần nữa", "out": "ngày 02/12/2026" } ]
+    },
+    {
+      "id": "rel_months",
+      "stage": "relative",
+      "role": "date",
+      "pattern": "(?<!\\w)(?<!thứ )(?<!ngày )(?<!ngay )(?<!mùng )(?<!mồng )(?<!mung )(?<!mong )(\\d{1,2})\\s*(?:tháng|thang)\\s*(?:nữa|nua|sau|tới|toi)(?!\\w)",
+      "compute": { "type": "relative_months", "group": 1 },
+      "examples": [ { "in": "1 tháng nữa", "out": "ngày 18/12/2026" } ]
+    },
+    {
+      "id": "rel_years",
+      "stage": "relative",
+      "role": "date",
+      "pattern": "(?<!\\w)(?<!thứ )(?<!ngày )(?<!ngay )(?<!mùng )(?<!mồng )(?<!mung )(?<!mong )(?<!tháng )(\\d{1,2})\\s*(?:năm|nam)\\s*(?:nữa|nua|sau|tới|toi)(?!\\w)",
+      "compute": { "type": "relative_years", "group": 1 },
+      "examples": [ { "in": "1 năm nữa", "out": "ngày 18/11/2027" } ]
+    },
+    {
+      "id": "rel_english",
+      "stage": "relative",
+      "role": "relative",
+      "pattern": "(?<!\\w)in\\s+(\\d{1,3})\\s*(minutes?|mins?|hours?|hrs?|days?|weeks?)(?!\\w)",
+      "compute": { "type": "relative_en", "number_group": 1, "unit_group": 2 },
+      "examples": [ { "in": "in 10 minutes", "out": "10 phút nữa" } ]
+    },
+
+    {
+      "id": "date_iso",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<![\\d/])(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})(?![\\d/])",
+      "replace": "ngày \\3/\\2/\\1",
+      "examples": [ { "in": "2026-12-05", "out": "ngày 05/12/2026" } ]
+    },
+    {
+      "id": "date_text_full",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)(?:(?:ngày|ngay|mùng|mồng|mung|mong)\\s+)?(\\d{1,2})\\s+tháng\\s+(\\d{1,2})\\s*(?:năm|,|/)?\\s*(\\d{4})(?!\\d)",
+      "replace": "ngày \\1/\\2/\\3",
+      "examples": [ { "in": "ngày 5 tháng 12 năm 2026", "out": "ngày 5/12/2026" }, { "in": "20 tháng 11 2026", "out": "ngày 20/11/2026" } ]
+    },
+    {
+      "id": "date_dmy",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<![\\d/.:])(?:(?:ngày|ngay)\\s+)?(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{4})(?![\\d/.])",
+      "replace": "ngày \\1/\\2/\\3",
+      "examples": [ { "in": "20-11-2026", "out": "ngày 20/11/2026" }, { "in": "ngày 05.12.2026", "out": "ngày 05/12/2026" } ]
+    },
+    {
+      "id": "date_dmy_short_year",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<![\\d/.:])(?:(?:ngày|ngay)\\s+)?(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{2})(?![\\d/.])",
+      "replace": "ngày \\1/\\2/20\\3",
+      "examples": [ { "in": "20/11/26", "out": "ngày 20/11/2026" } ]
+    },
+    {
+      "id": "date_text_no_year",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)(?:ngày|ngay|mùng|mồng|mung|mong)\\s+(\\d{1,2})\\s+tháng\\s+(\\d{1,2})(?!\\d)(?!\\s*(?:âm\\s*lịch|âm|năm|/)(?!\\w))",
+      "compute": { "type": "infer_year", "day_group": 1, "month_group": 2 },
+      "examples": [ { "in": "ngày 5 tháng 12", "out": "ngày 05/12/2026" }, { "in": "mùng 2 tháng 9", "out": "ngày 02/09/2027" } ]
+    },
+    {
+      "id": "date_day_of_relative_month",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)(?:ngày|ngay|mùng|mồng|mung|mong)\\s+(\\d{1,2})\\s+(tháng sau nữa|tháng này|tháng sau)(?!\\w)",
+      "compute": { "type": "day_of_month", "day_group": 1, "offset_group": 2 },
+      "examples": [ { "in": "ngày 5 tháng sau", "out": "ngày 05/12/2026" }, { "in": "ngày 25 tháng này", "out": "ngày 25/11/2026" } ]
+    },
+    {
+      "id": "date_month_start",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)đầu\\s+tháng\\s+(\\d{1,2})(?:\\s*(?:/|năm)\\s*(\\d{4}))?(?![\\d/])",
+      "compute": { "type": "month_day", "day": 1, "month_group": 1, "year_group": 2 },
+      "examples": [ { "in": "đầu tháng 12", "out": "ngày 01/12/2026" }, { "in": "đầu tháng 3/2027", "out": "ngày 01/03/2027" } ]
+    },
+    {
+      "id": "date_month_mid",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)giữa\\s+tháng\\s+(\\d{1,2})(?:\\s*(?:/|năm)\\s*(\\d{4}))?(?![\\d/])",
+      "compute": { "type": "month_day", "day": 15, "month_group": 1, "year_group": 2 },
+      "examples": [ { "in": "giữa tháng 1", "out": "ngày 15/01/2027" } ]
+    },
+    {
+      "id": "date_month_end",
+      "stage": "date",
+      "role": "date",
+      "pattern": "(?<!\\w)cuối\\s+tháng\\s+(\\d{1,2})(?:\\s*(?:/|năm)\\s*(\\d{4}))?(?![\\d/])",
+      "compute": { "type": "month_day", "day": "last", "month_group": 1, "year_group": 2 },
+      "examples": [ { "in": "cuối tháng 2/2027", "out": "ngày 28/02/2027" } ]
+    },
+    {
+      "id": "date_month_year_only",
+      "stage": "date",
+      "role": "date",
+      "note": "Chỉ nói tháng/năm, không nói ngày: mặc định ngày 01 (giống quy tắc 'đầu tháng' trong prompt LLM).",
+      "pattern": "(?<!\\w)tháng\\s+(\\d{1,2})\\s*(?:/|năm)\\s*(\\d{4})(?![\\d/])",
+      "compute": { "type": "month_day", "day": 1, "month_group": 1, "year_group": 2 },
+      "examples": [ { "in": "tháng 12/2026", "out": "ngày 01/12/2026" } ]
+    },
+    {
+      "id": "date_dd_mm_infer_year",
+      "stage": "date",
+      "role": "date",
+      "note": "Ngày dạng DD/MM không có năm. Không áp dụng nếu theo sau là 'âm lịch'.",
+      "pattern": "(?<![\\d/.:])(?:(?:ngày|ngay)\\s+)?(\\d{1,2})/(\\d{1,2})(?![\\d/])(?!\\s*(?:âm\\s*lịch|âm)(?!\\w))",
+      "compute": { "type": "infer_year", "day_group": 1, "month_group": 2 },
+      "examples": [ { "in": "20/11", "out": "ngày 20/11/2026" }, { "in": "ngày 10/11", "out": "ngày 10/11/2027" } ]
+    },
+    {
+      "id": "date_day_only",
+      "stage": "date",
+      "role": "date",
+      "note": "Chỉ có ngày ('mùng 5', 'ngày 20'): lấy lần gần nhất sắp tới.",
+      "pattern": "(?<!\\w)(?<!hàng )(?<!hằng )(?<!mỗi )(?<!hang )(?<!moi )(?:ngày|ngay|mùng|mồng|mung|mong)\\s+(\\d{1,2})(?![\\d/:.])(?!\\s*(?:tháng|thang|âm\\s*lịch|âm|nữa|nua|sau|tới|toi|lần|lan)(?!\\w))(?!\\s*(?:h|giờ|gio|g|rưỡi|ruoi|kém|kem)(?![a-zà-ỹ]))",
+      "compute": { "type": "next_day_of_month", "day_group": 1 },
+      "examples": [ { "in": "mùng 5", "out": "ngày 05/12/2026" }, { "in": "ngày 25", "out": "ngày 25/11/2026" } ]
+    },
+
+    {
+      "id": "time_kem",
+      "stage": "time",
+      "role": "time",
+      "pattern": "(?<![\\w:])([01]?\\d|2[0-3])\\s*(?:h|giờ|gio|g)\\s*(?:kém|kem)\\s*([0-5]?\\d)(?:\\s*(?:phút|phut|ph|p))?(?!\\w)",
+      "compute": { "type": "time_minus", "hour_group": 1, "minute_group": 2 },
+      "examples": [ { "in": "8h kém 15", "out": "07:45" }, { "in": "10 giờ kém 10 phút", "out": "09:50" } ]
+    },
+    {
+      "id": "time_half",
+      "stage": "time",
+      "role": "time",
+      "pattern": "(?<![\\w:])([01]?\\d|2[0-3])\\s*(?:h|giờ|gio|g)?\\s*(?:rưỡi|ruoi)(?!\\w)",
+      "replace": "\\1:30",
+      "examples": [ { "in": "4 rưỡi chiều", "out": "4:30 chiều" }, { "in": "8h rưỡi", "out": "8:30" } ]
+    },
+    {
+      "id": "time_h_m",
+      "stage": "time",
+      "role": "time",
+      "pattern": "(?<![\\w:])([01]?\\d|2[0-3])\\s*(?:h|giờ|gio|g)\\s*([0-5]?\\d)(?:\\s*(?:phút|phut|ph|p|'))?(?![\\d/])(?!\\s*(?:nữa|nua|sau|ngày|ngay|tuần|tuan|tháng|thang|năm|nam|người|nguoi)(?!\\w))",
+      "replace": "\\1:\\2",
+      "examples": [ { "in": "8h30", "out": "8:30" }, { "in": "14 giờ 15 phút", "out": "14:15" }, { "in": "9g45", "out": "9:45" }, { "in": "8 giờ 30 sáng", "out": "8:30 sáng" } ]
+    },
+    {
+      "id": "time_h_only",
+      "stage": "time",
+      "role": "time",
+      "note": "Không nhận 'g' đứng riêng ('3g', '4g' thường là mạng di động); '9g30' vẫn được rule time_h_m xử lý.",
+      "pattern": "(?<![\\w:])([01]?\\d|2[0-3])\\s*(?:giờ|gio|h)(?:\\s*(?:đúng|dung))?(?![\\w:])(?!\\s*(?:nữa|nua|sau|tới|toi)(?!\\w))",
+      "replace": "\\1:00",
+      "examples": [ { "in": "9h sáng", "out": "9:00 sáng" }, { "in": "3 giờ đúng", "out": "3:00" }, { "in": "15h", "out": "15:00" } ]
+    },
+    {
+      "id": "time_dot",
+      "stage": "time",
+      "role": "time",
+      "note": "'14.00' / '9.30'. Chạy sau stage 'date' nên '12.05.2026' đã thành ngày. '12.05' đứng riêng được hiểu là giờ, giống parse_message_timefirst hiện tại.",
+      "pattern": "(?<![\\d/.:])([01]?\\d|2[0-3])\\.([0-5]\\d)(?![\\d/.])",
+      "replace": "\\1:\\2",
+      "examples": [ { "in": "14.00 họp", "out": "14:00 họp" } ]
+    },
+    {
+      "id": "time_ampm",
+      "stage": "time",
+      "role": "time",
+      "pattern": "(?<![\\w:])(1[0-2]|0?[1-9])(?::([0-5]\\d))?\\s*(a\\.?m\\.?|p\\.?m\\.?)(?!\\w)",
+      "compute": { "type": "ampm", "hour_group": 1, "minute_group": 2, "marker_group": 3 },
+      "examples": [ { "in": "9pm", "out": "21:00" }, { "in": "7:30 am", "out": "07:30" } ]
+    },
+    {
+      "id": "time_colon_pad",
+      "stage": "time",
+      "role": "time",
+      "note": "Chuẩn hoá cuối cùng: 9:5 -> 9:05 (parser vẫn hiểu cả hai, rule này chỉ để đẹp).",
+      "pattern": "(?<![\\d:])([01]?\\d|2[0-3]):(\\d)(?![\\d])",
+      "replace": "\\1:0\\2",
+      "examples": [ { "in": "9:5", "out": "9:05" } ]
+    },
+
+    {
+      "id": "repeat_n_unit_per_time",
+      "stage": "repeat",
+      "role": "repeat",
+      "pattern": "(?<!\\w)(?:cứ\\s+)?(\\d{1,3})\\s*(ngày|tuần|tháng|năm)\\s*(?:một|1)\\s*lần(?!\\w)",
+      "replace": "mỗi \\1 \\2",
+      "examples": [ { "in": "3 ngày 1 lần", "out": "mỗi 3 ngày" }, { "in": "2 tuần một lần", "out": "mỗi 2 tuần" }, { "in": "cứ 2 tháng 1 lần", "out": "mỗi 2 tháng" } ]
+    },
+    {
+      "id": "repeat_cu_n_unit",
+      "stage": "repeat",
+      "role": "repeat",
+      "pattern": "(?<!\\w)cứ\\s+(\\d{1,3})\\s*(ngày|tuần|tháng|năm)(?:\\s*(?:một|1)\\s*lần)?(?!\\w)",
+      "replace": "mỗi \\1 \\2",
+      "examples": [ { "in": "cứ 2 tuần", "out": "mỗi 2 tuần" } ]
+    },
+    {
+      "id": "repeat_strip_lap_lai",
+      "stage": "repeat",
+      "role": "repeat",
+      "pattern": "(?<!\\w)(?:lặp lại|lặp|lap lai)\\s+(hàng ngày|hàng tuần|hàng tháng|hàng năm|ngày thường|cuối tuần)(?!\\w)",
+      "replace": "\\1",
+      "examples": [ { "in": "lặp lại hàng tuần", "out": "hàng tuần" } ]
+    }
+  ],
+
+  "computed_phrases": [
+    { "from": ["ngày kia", "ngay kia", "ngày mốt", "ngay mot", "mốt"], "role": "date", "compute": { "type": "relative_days", "days": 2 }, "example": "ngày 20/11/2026" },
+    { "from": ["ngày kìa", "ngày kia nữa"], "role": "date", "compute": { "type": "relative_days", "days": 3 }, "example": "ngày 21/11/2026" },
+    { "from": ["giờ này ngày mai", "tầm này mai", "giờ này mai"], "role": "date+time", "compute": { "type": "same_time", "days": 1 }, "example": "09:00 ngày 19/11/2026" },
+    { "from": ["giờ này tuần sau", "tầm này tuần sau"], "role": "date+time", "compute": { "type": "same_time", "days": 7 }, "example": "09:00 ngày 25/11/2026" },
+
+    { "from": ["đầu tuần sau"], "role": "date", "compute": { "type": "week_day", "weekday": 0, "week_offset": 1 }, "example": "ngày 23/11/2026" },
+    { "from": ["đầu tuần"], "role": "date", "compute": { "type": "week_day", "weekday": 0, "week_offset": 0, "roll_forward": true }, "example": "ngày 23/11/2026" },
+    { "from": ["giữa tuần sau"], "role": "date", "compute": { "type": "week_day", "weekday": 2, "week_offset": 1 }, "example": "ngày 25/11/2026" },
+    { "from": ["giữa tuần"], "role": "date", "compute": { "type": "week_day", "weekday": 2, "week_offset": 0, "roll_forward": true }, "example": "ngày 18/11/2026" },
+    { "from": ["cuối tuần sau"], "role": "date", "compute": { "type": "week_day", "weekday": 5, "week_offset": 1 }, "example": "ngày 28/11/2026" },
+    { "from": ["cuối tuần này"], "role": "date", "compute": { "type": "week_day", "weekday": 5, "week_offset": 0, "roll_forward": true }, "example": "ngày 21/11/2026" },
+    { "from": ["tuần sau nữa"], "role": "date", "compute": { "type": "week_day", "weekday": 0, "week_offset": 2 }, "example": "ngày 30/11/2026" },
+    { "from": ["cuối tuần"], "role": "date", "note": "'cuối tuần' đứng riêng = thứ 7 gần nhất (1 lần). Muốn lặp thì dùng 'mỗi cuối tuần' (phrase repeat -> 'weekend').", "compute": { "type": "week_day", "weekday": 5, "week_offset": 0, "roll_forward": true }, "example": "ngày 21/11/2026" },
+
+    { "from": ["đầu tháng sau nữa"], "role": "date", "compute": { "type": "month_day", "day": 1, "month_offset": 2 }, "example": "ngày 01/01/2027" },
+    { "from": ["đầu tháng sau"], "role": "date", "compute": { "type": "month_day", "day": 1, "month_offset": 1 }, "example": "ngày 01/12/2026" },
+    { "from": ["đầu tháng này", "đầu tháng"], "role": "date", "compute": { "type": "month_day", "day": 1, "month_offset": 0, "roll_forward": true }, "example": "ngày 01/12/2026" },
+    { "from": ["giữa tháng sau"], "role": "date", "compute": { "type": "month_day", "day": 15, "month_offset": 1 }, "example": "ngày 15/12/2026" },
+    { "from": ["giữa tháng này", "giữa tháng"], "role": "date", "compute": { "type": "month_day", "day": 15, "month_offset": 0, "roll_forward": true }, "example": "ngày 15/12/2026" },
+    { "from": ["cuối tháng sau"], "role": "date", "compute": { "type": "month_day", "day": "last", "month_offset": 1 }, "example": "ngày 31/12/2026" },
+    { "from": ["cuối tháng này", "cuối tháng"], "role": "date", "compute": { "type": "month_day", "day": "last", "month_offset": 0, "roll_forward": true }, "example": "ngày 30/11/2026" },
+    { "from": ["tháng sau nữa"], "role": "date", "compute": { "type": "month_day", "day": 1, "month_offset": 2 }, "example": "ngày 01/01/2027" },
+
+    { "from": ["đầu năm sau"], "role": "date", "compute": { "type": "year_day", "day": 1, "month": 1, "year_offset": 1 }, "example": "ngày 01/01/2027" },
+    { "from": ["đầu năm"], "role": "date", "compute": { "type": "year_day", "day": 1, "month": 1, "year_offset": 0, "roll_forward": true }, "example": "ngày 01/01/2027" },
+    { "from": ["giữa năm sau"], "role": "date", "compute": { "type": "year_day", "day": 1, "month": 7, "year_offset": 1 }, "example": "ngày 01/07/2027" },
+    { "from": ["giữa năm"], "role": "date", "compute": { "type": "year_day", "day": 1, "month": 7, "year_offset": 0, "roll_forward": true }, "example": "ngày 01/07/2027" },
+    { "from": ["cuối năm sau"], "role": "date", "compute": { "type": "year_day", "day": 31, "month": 12, "year_offset": 1 }, "example": "ngày 31/12/2027" },
+    { "from": ["cuối năm nay", "cuối năm"], "role": "date", "compute": { "type": "year_day", "day": 31, "month": 12, "year_offset": 0, "roll_forward": true }, "example": "ngày 31/12/2026" }
+  ],
+
+  "periods": [
+    { "words": ["sáng sớm", "sang som", "tinh mơ", "rạng sáng"], "default_time": "06:00", "hour_shift": null },
+    { "words": ["đầu giờ sáng", "đầu giờ"], "default_time": "08:00", "hour_shift": null },
+    { "words": ["sáng"], "default_time": "09:00", "hour_shift": null },
+    { "words": ["trưa", "giữa trưa", "buổi trưa"], "default_time": "12:00", "hour_shift": { "add12_when_hour_in": [1, 4] } },
+    { "words": ["đầu giờ chiều"], "default_time": "13:30", "hour_shift": { "add12_when_hour_in": [1, 11] } },
+    { "words": ["chiều"], "default_time": "16:00", "hour_shift": { "add12_when_hour_in": [1, 11] } },
+    { "words": ["cuối ngày", "cuối ngày làm việc"], "default_time": "16:00", "hour_shift": { "add12_when_hour_in": [1, 11] } },
+    { "words": ["cuối giờ chiều", "cuối giờ", "tan làm", "tan ca", "hết giờ làm"], "default_time": "17:00", "hour_shift": { "add12_when_hour_in": [1, 11] } },
+    { "words": ["chập tối", "nhá nhem"], "default_time": "18:00", "hour_shift": { "add12_when_hour_in": [1, 11] } },
+    { "words": ["tối"], "default_time": "20:00", "hour_shift": { "add12_when_hour_in": [5, 11] } },
+    { "words": ["đêm", "khuya", "tối muộn", "đêm muộn"], "default_time": "22:00", "hour_shift": { "add12_when_hour_in": [8, 11] } },
+    { "words": ["nửa đêm", "giữa đêm"], "default_time": "00:00", "hour_shift": null, "note": "00:00 là đầu ngày hôm sau: 'nửa đêm nay' nên cộng thêm 1 ngày." }
+  ],
+
+  "default_time_by_keyword": {
+    "note": "Chỉ dùng khi không có giờ cụ thể và không có từ chỉ buổi. Thứ tự ưu tiên: giờ cụ thể > buổi > từ khoá > get_default_remind_time(). Lấy từ quy tắc 5b trong prompt LLM.",
+    "rules": [
+      { "time": "16:00", "keywords": ["deadline", "dead line", "hạn chót", "hạn nộp", "hạn cuối", "hết hạn", "nộp", "báo cáo", "gửi báo cáo", "hoàn thành", "trước ngày", "due"] },
+      { "time": "09:00", "keywords": ["họp", "hop", "meeting", "giao ban", "sinh nhật", "sinh nhat", "giỗ", "gặp", "hẹn", "khám", "phỏng vấn", "đầu tháng"] },
+      { "time": "09:00", "keywords": ["âm lịch"], "note": "Ngày âm lịch không có giờ mặc định 09:00." }
+    ]
+  },
+
+  "intent_keywords": [
+    "nhắc", "nhac", "nhớ", "nho", "remind", "hẹn", "hen", "lịch", "lich", "đặt lịch", "kế hoạch",
+    "họp", "hop", "meeting", "deadline", "hạn chót", "hạn nộp", "hết hạn", "nộp", "nop", "báo cáo", "gửi", "gọi", "goi", "call",
+    "gặp", "gap", "đi", "di", "về quê", "đón", "don", "đưa", "khám", "kham", "uống", "uong", "mua", "trả", "đóng", "dong",
+    "thanh toán", "chuyển khoản", "chuyển", "gia hạn", "giao", "nhận", "lấy", "làm", "học", "hoc", "thi", "tập", "tap", "chạy",
+    "sinh nhật", "giỗ", "đám", "cưới", "liên hoan", "tổng kết", "bay", "check", "kiểm tra", "review", "demo", "phỏng vấn",
+    "tiêm", "xem", "đọc", "viết", "ăn", "nấu", "dọn", "tưới", "cúng", "tặng", "đặt", "sửa", "thay", "trực", "chấm",
+    "tắt", "bật", "rút", "backup", "sao lưu", "nâng cấp", "cập nhật", "đá", "ngủ", "dậy", "thức",
+    "đổi", "giao ban", "bơi", "lễ", "chùa"
+  ],
+
+  "blockers": {
+    "note": "Câu khớp blocker thì bước từ điển trả None (để LLM quyết định có phải nhắc lịch không).",
+    "question_endings": ["không", "ko", "k", "hông", "hem", "chưa", "nhỉ", "hả", "hở", "à", "sao", "chứ", "đâu", "gì", "nào", "thế", "vậy"],
+    "question_phrases": ["mấy giờ", "mấy h", "bao giờ", "khi nào", "lúc nào", "ngày nào", "thứ mấy", "bao lâu", "có không", "được không"],
+    "past_markers": ["hôm qua", "hôm kia", "hôm trước", "hồi sáng", "hồi chiều", "hồi tối", "hồi nãy", "lúc nãy", "ban nãy", "vừa nãy",
+                     "vừa rồi", "vừa xong", "tuần trước", "tháng trước", "năm ngoái", "năm trước", "đã", "xong rồi"],
+    "idioms": ["mai mốt", "mai kia", "mai sau", "sớm muộn"]
+  },
+
+  "ambiguous": [
+    { "term": "mai", "issue": "Có thể là tên người ('chị Mai', 'hoa mai'). parse_time() đang kiểm tra 'mai' in text nên dễ nhận nhầm.", "suggestion": "Chỉ tin 'mai' khi đứng cạnh giờ / buổi / 'lúc', hoặc ở phần sau separator." },
+    { "term": "mốt", "issue": "'Ngày mốt' (ngày kia) hoặc 'mốt' (thời trang).", "suggestion": "Chỉ áp dụng khi câu có giờ hoặc separator 'lúc/vào'." },
+    { "term": "năm", "issue": "Số 5 hoặc 'năm' (year).", "suggestion": "Chỉ đổi thành 5 khi đứng trước đơn vị thời gian (đã giới hạn bằng lookahead)." },
+    { "term": "cuối tuần", "issue": "Parser luật coi 'cuối tuần' là lặp T7–CN, nhưng người dùng thường chỉ muốn 1 lần.", "suggestion": "Ở bước từ điển: 'cuối tuần' / 'cuối tuần này' / 'cuối tuần sau' = thứ 7 cụ thể (1 lần); chỉ 'mỗi cuối tuần', 'cuối tuần nào cũng' mới là lặp (weekend)." },
+    { "term": "cn", "issue": "Có thể là 'công nhân', 'chi nhánh'.", "suggestion": "Chỉ áp dụng khi đứng cạnh giờ hoặc từ 'tuần'." },
+    { "term": "thu / sang / toi", "issue": "Không dấu trùng với 'mùa thu', 'đi sang', 'tôi'.", "suggestion": "Chỉ chuyển khi đi thành cụm ('thu 2', 'sang mai', 'toi nay'), không chuyển từ đứng riêng." },
+    { "term": "12.05", "issue": "Có thể là 12:05 hoặc ngày 12/05.", "suggestion": "Mặc định là giờ (giống bot hiện tại). Muốn là ngày thì người dùng ghi 12/05." },
+    { "term": "2 giờ sau", "issue": "'Sau 2 tiếng' hay '2h chiều sau đó'.", "suggestion": "Mặc định là 'sau 2 tiếng'." },
+    { "term": "hôm kia / tuần trước / tháng trước", "issue": "Thời điểm trong quá khứ, không đặt nhắc được.", "suggestion": "Không ánh xạ; để rơi xuống LLM hoặc báo lỗi cho người dùng." },
+    { "term": "tết", "issue": "Thường là Tết âm lịch, nhưng 'tết tây' / 'tết dương lịch' là 01/01.", "suggestion": "Các cụm dài hơn ('tết dương lịch') đã khớp trước 'tết' nhờ quy tắc cụm dài trước." },
+    { "term": "nửa đêm", "issue": "00:00 thuộc ngày hôm sau.", "suggestion": "Cộng 1 ngày khi đi kèm 'nay' / 'hôm nay'." },
+    { "term": "rằm", "issue": "Luôn hiểu là âm lịch nhưng không có 'tháng' thì không biết tháng nào.", "suggestion": "'rằm' -> 'ngày 15', cần thêm 'âm lịch' để parse_lunar_reminder xử lý; không có tháng thì lấy rằm gần nhất." }
+  ]
+}

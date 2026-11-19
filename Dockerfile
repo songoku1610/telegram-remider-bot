@@ -13,5 +13,7 @@ COPY weatherAPI.py .
 COPY telegrambot.py .
 COPY lunarcalendar.py .
 COPY llm_service.py .
+COPY dictionary_parser.py .
+COPY dictionary.json .
 
 CMD ["python", "main.py"]

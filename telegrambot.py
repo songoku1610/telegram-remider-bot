@@ -14,6 +14,7 @@ from dateutil.relativedelta import relativedelta
 from weatherAPI import format_tomorrow_7am_forecast, format_tomorrow_day_forecast, format_weather_info
 from lunarcalendar import solar_to_lunar, lunar_to_solar
 from llm_service import parse_with_gemini
+from dictionary_parser import parse_with_dictionary, contains_time_expression
 
 
 from telegram import Update
@@ -193,6 +194,91 @@ def build_llm_meeting_reminders(message, remind_time, repeat_type):
         (f"Nhắc trước 15 phút: {message}", remind_time - timedelta(minutes=15), repeat_type),
         (f"Nhắc trước 5 phút: {message}", remind_time - timedelta(minutes=5), repeat_type),
     ]
+
+
+# Nguồn đã nhận diện thời gian, hiển thị trong tin nhắn xác nhận
+PARSE_SOURCE_RULE = "Rule"
+PARSE_SOURCE_DICTIONARY = "Dictionary"
+PARSE_SOURCE_LLM = "LLM"
+PARSE_SOURCE_DEFAULT = "Default"
+
+
+# Câu bắt đầu bằng số trần ("10 người", "15 phút nữa", "2 giờ chiều") không phải cú pháp
+# giờ-đứng-đầu đã định nghĩa (luôn có h / : / . như "14.00", "10h T3").
+_BARE_NUMBER_START_RE = re.compile(r"^\s*\d{1,2}\s+")
+
+
+def rule_result_is_trustworthy(text, rule_messages, multi=False):
+    """Rule khớp sai thì coi như không khớp, để rơi xuống Dictionary.
+
+    Sai khi: câu bắt đầu bằng số trần; tách nhiều lịch từ tin nhiều dòng;
+    hoặc nội dung Rule trả về (dòng đầu) vẫn còn mốc thời gian mà Rule đã bỏ qua
+    (VD 'Họp thứ 4 lúc 9h' → Rule bỏ qua 'thứ 4').
+    """
+    if _BARE_NUMBER_START_RE.match(text):
+        return False
+    if multi and "\n" in text.strip():
+        return False
+    for msg in rule_messages:
+        first_line = (msg or "").strip().split("\n", 1)[0]
+        if contains_time_expression(first_line):
+            return False
+    return True
+
+
+def format_parse_source(source: str) -> str:
+    return f"🏷 <b>Nhận diện bởi:</b> <code>{source}</code>"
+
+
+def dictionary_items_via_rule(dict_res):
+    """Dictionary chỉ DỊCH câu tự nhiên → cú pháp chuẩn; Rule (parse_message) mới TÍNH datetime.
+    Giống luồng LLM: mọi nguồn đều đổ về cùng 1 parser, sửa cú pháp/chức năng chỉ ở 1 nơi.
+    Nếu Rule không parse được cú pháp chuẩn (không được xảy ra) → dùng giá trị Dictionary và log cảnh báo."""
+    items = []
+    for std, dict_item in zip(dict_res.syntaxes, dict_res.items):
+        rule_res = parse_message(std)
+        if not rule_res:
+            logger.warning("dictionary_syntax_rule_failed std=%r", std)
+            items.append(dict_item)
+            continue
+        if (rule_res[1].replace(second=0, microsecond=0) != dict_item[1].replace(second=0, microsecond=0)
+                or (rule_res[2] or None) != (dict_item[2] or None)):
+            logger.warning("dictionary_rule_mismatch std=%r dict=%r rule=%r", std, dict_item, rule_res[:3])
+        items.append((rule_res[0], rule_res[1], rule_res[2]))
+    return items
+
+
+def _insert_many_reminders(user_id, items, fw_prefix=""):
+    """Chèn nhiều lịch dương lịch, bỏ qua lịch trùng. Trả về (inserted, skipped)."""
+    inserted = []
+    skipped = 0
+    for (m_msg, m_time, m_rtype) in items:
+        m_msg = fw_prefix + m_msg
+        cursor.execute(
+            "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
+            (user_id, m_msg, m_time),
+        )
+        if cursor.fetchone():
+            skipped += 1
+            continue
+        cursor.execute(
+            "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, m_msg, m_time, m_rtype, False, None, None, None, False),
+        )
+        inserted.append((m_msg, m_time, m_rtype))
+    db.commit()
+    return inserted, skipped
+
+
+def format_many_reminders_reply(inserted, source):
+    lines = [f"✅ <b>Đã thêm {len(inserted)} lịch:</b>"]
+    for (m_msg, m_time, m_rtype) in inserted:
+        wd = weekday_vi(m_time)
+        rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
+        lines.append(f"• {wd}, {m_time.strftime('%d-%m-%Y %H:%M')} — {html.escape(m_msg)} ({rt_str})")
+    lines.append(format_parse_source(source))
+    return "\n".join(lines)
 
 
 def _display_name(first_name=None, last_name=None, title=None, username=None):
@@ -1350,39 +1436,26 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _llm_auto_slot_note = None
     _llm_meeting = False
     _llm_parsed = False
+    _dict_auto_slot_note = None
+    parse_source = None
 
-    # Thử parse nhiều ngày/thứ trong 1 lệnh
+    # ===== 1. RULE: Thử parse nhiều ngày/thứ trong 1 lệnh =====
     if not is_lunar:
         multi = parse_multi_reminder(text)
+        if multi and len(multi) >= 2 and not rule_result_is_trustworthy(text, [multi[0][0]], multi=True):
+            print(f"⚠️ RULE MULTI REJECTED: '{text}' -> {multi[0][0]!r}", flush=True)
+            multi = None
         if multi and len(multi) >= 2:
-            inserted = []
-            for (m_msg, m_time, m_rtype) in multi:
-                m_msg = fw_prefix + m_msg
-                cursor.execute(
-                    "SELECT id FROM reminders WHERE user_id=%s AND message=%s AND remind_at=%s AND is_active=TRUE",
-                    (user_id, m_msg, m_time),
-                )
-                if cursor.fetchone():
-                    continue
-                cursor.execute(
-                    "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (user_id, m_msg, m_time, m_rtype, False, None, None, None, False),
-                )
-                inserted.append((m_msg, m_time, m_rtype))
-            db.commit()
+            inserted, _ = _insert_many_reminders(user_id, multi, fw_prefix)
             if not inserted:
                 await update.message.reply_text("⚠️ Dạ, tất cả lịch này em đã note rồi ạ!")
                 return
-            lines = [f"✅ <b>Đã thêm {len(inserted)} lịch:</b>"]
-            for (m_msg, m_time, m_rtype) in inserted:
-                wd = weekday_vi(m_time)
-                rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
-                lines.append(f"• {wd}, {m_time.strftime('%d-%m-%Y %H:%M')} — {m_msg} ({rt_str})")
-            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            await update.message.reply_text(
+                format_many_reminders_reply(inserted, PARSE_SOURCE_RULE), parse_mode="HTML"
+            )
             return
 
-    # Thử parse bằng parser nội bộ trước
+    # ===== 1. RULE: parser nội bộ =====
     parsed = False
     if is_lunar:
         lunar_parsed = parse_lunar_reminder(text)
@@ -1391,11 +1464,53 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parsed = True
     else:
         parsed_res = parse_message(text)
+        if parsed_res and not rule_result_is_trustworthy(text, [parsed_res[0]]):
+            print(f"⚠️ RULE REJECTED: '{text}' -> {parsed_res[0]!r}", flush=True)
+            parsed_res = None
         if parsed_res:
             message, remind_time, repeat_type = parsed_res
             parsed = True
+    if parsed:
+        parse_source = PARSE_SOURCE_RULE
 
-    # Nếu parser nội bộ không nhận diện được cú pháp → Chuyển qua LLM Gemini Flash
+    # ===== 2. DICTIONARY: ánh xạ từ điển (dictionary.json) =====
+    if not parsed:
+        try:
+            dict_res = parse_with_dictionary(text)
+        except Exception as exc:
+            logger.exception("dictionary_parse_failed")
+            dict_res = None
+
+        if dict_res:
+            print(f"📖 DICTIONARY CONVERTED: '{text}' -> '{dict_res.standard_syntax}'", flush=True)
+            if dict_res.is_lunar:
+                lunar_parsed = parse_lunar_reminder(dict_res.standard_syntax)
+                if lunar_parsed:
+                    message, remind_time, repeat_type, lunar_day, lunar_month, lunar_year, lunar_leap = lunar_parsed
+                    is_lunar = True
+                    parsed = True
+            elif len(dict_res.items) > 1:
+                rule_items = dictionary_items_via_rule(dict_res)
+                inserted, _ = _insert_many_reminders(user_id, rule_items, fw_prefix)
+                if not inserted:
+                    await update.message.reply_text("⚠️ Dạ, tất cả lịch này em đã note rồi ạ!")
+                    return
+                await update.message.reply_text(
+                    format_many_reminders_reply(inserted, PARSE_SOURCE_DICTIONARY), parse_mode="HTML"
+                )
+                return
+            elif dict_res.items:
+                message, remind_time, repeat_type = dictionary_items_via_rule(dict_res)[0]
+                parsed = True
+
+            if parsed:
+                parse_source = PARSE_SOURCE_DICTIONARY
+                if dict_res.auto_time:
+                    _dict_auto_slot_note = (
+                        f"\n💡 <i>(Không thấy giờ cụ thể, em đặt lúc {remind_time.strftime('%H:%M')} theo ngữ cảnh)</i>"
+                    )
+
+    # ===== 3. LLM: chỉ gọi khi Rule và Dictionary đều không nhận diện được =====
     if not parsed:
         now_local = datetime.now(WEATHER_INFORMATION_TIMEZONE)
         try:
@@ -1501,6 +1616,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if skipped_duplicates > 0:
                     lines.append(f"\n<i>(Đã bỏ qua {skipped_duplicates} lịch bị trùng trước đó)</i>")
+                lines.append(format_parse_source(PARSE_SOURCE_LLM))
 
                 msg_reply = "\n".join(lines)
                 await send_split_message(update, msg_reply, parse_mode="HTML")
@@ -1531,6 +1647,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 _llm_meeting = parsed and bool(single_item.get("is_meeting"))
                 _llm_parsed = parsed
+                if parsed:
+                    parse_source = PARSE_SOURCE_LLM
 
     # Fallback cuối cùng nếu cả regex và LLM không parse được
     if not parsed:
@@ -1549,6 +1667,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             remind_time = get_default_remind_time()
             repeat_type = "none"
             _fallback_hint = True
+            parse_source = PARSE_SOURCE_DEFAULT
 
     # Tin forward hoặc tin phải nhờ LLM: giữ nguyên văn bản gốc, chỉ lấy thời gian từ kết quả bóc tách
     if fw_prefix or _llm_parsed:
@@ -1574,8 +1693,11 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_reply += f"🔁 <b>Tần suất:</b> {text_repeat}"
     if _llm_auto_slot_note:
         text_reply += _llm_auto_slot_note
+    if _dict_auto_slot_note:
+        text_reply += _dict_auto_slot_note
     if _llm_meeting:
         text_reply += "\n🔔 <b>Nhắc thêm:</b> trước 15 phút và trước 5 phút"
+    text_reply += "\n" + format_parse_source(parse_source or PARSE_SOURCE_DEFAULT)
     if not is_lunar and _fallback_hint:
         text_reply += "\n\n💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết."
 
