@@ -1490,7 +1490,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     is_lunar = True
                     parsed = True
             elif len(dict_res.items) > 1:
-                rule_items = dictionary_items_via_rule(dict_res)
+                # Giữ nguyên văn bản gốc cho từng lịch, chỉ lấy thời gian/lặp từ kết quả bóc tách
+                rule_items = [(text, dt, rtype) for _, dt, rtype in dictionary_items_via_rule(dict_res)]
                 inserted, _ = _insert_many_reminders(user_id, rule_items, fw_prefix)
                 if not inserted:
                     await update.message.reply_text("⚠️ Dạ, tất cả lịch này em đã note rồi ạ!")
@@ -1669,8 +1670,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _fallback_hint = True
             parse_source = PARSE_SOURCE_DEFAULT
 
-    # Tin forward hoặc tin phải nhờ LLM: giữ nguyên văn bản gốc, chỉ lấy thời gian từ kết quả bóc tách
-    if fw_prefix or _llm_parsed:
+    # Tin forward, tin nhờ Dictionary hoặc LLM: giữ nguyên văn bản gốc, chỉ lấy thời gian từ kết quả bóc tách
+    if fw_prefix or _llm_parsed or parse_source == PARSE_SOURCE_DICTIONARY:
         message = fw_prefix + text
 
     text_repeat =format_repeat_type(repeat_type) if repeat_type != "none" else ""

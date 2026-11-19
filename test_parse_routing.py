@@ -129,6 +129,8 @@ ROUTING_CASES = [
     ("Tập gym t2 t4 t6 lúc 18h", None, "Dictionary", 0, 3),
     ("trực ca 20/11, 25/11 và 30/11 lúc 7h", None, "Dictionary", 0, 3),
     ("Họp với chị Mai lúc 9h", None, "Rule", 0, 1),
+    # Tin thật từ người dùng: Dictionary phải giữ nguyên văn
+    ("vụ tối ưu anh em chuyển sang chiều mai 4h 30 lên phòng anh nhé", None, "Dictionary", 0, 1),
 
     ("Họp giao ban lúc 9h mai", None, "Rule", 0, 1),
     ("Tập gym lúc 18h T2,T4,T6", None, "Rule", 0, 3),
@@ -188,6 +190,11 @@ def test_routing():
             problems.append(f"gọi LLM {calls} lần (kỳ vọng {llm_calls})")
         if len(inserted) != n_insert:
             problems.append(f"insert {len(inserted)} lịch (kỳ vọng {n_insert})")
+        # Dictionary: nội dung lưu phải là nguyên văn tin gốc (không cắt phần thời gian)
+        if source == "Dictionary":
+            wrong = [p[1] for p in inserted if p[1] != text]
+            if wrong:
+                problems.append(f"nội dung bị cắt: {wrong[0]!r}")
         if problems:
             failures.append(text)
             print(f"❌ {text[:60]!r}: {', '.join(problems)}\n   reply: {reply!r}")
