@@ -157,15 +157,14 @@ NHIỆM VỤ CỦA BẠN:
       - Giữ nguyên giờ đó (chuyển sang định dạng HH:MM 24h).
       - "has_explicit_time": true
    b. Người dùng KHÔNG nói giờ cụ thể ("has_explicit_time": false):
-      - Nếu là DEADLINE / HẠN CHÓT / BÁO CÁO / NỘP HỒ SƠ / BUỔI CHIỀU / CUỐI NGÀY:
-        Mặc định chọn 16:00 chiều (hạn kết thúc ngày làm việc).
-      - Nếu là CUỘC HỌP / KẾ HOẠCH ĐẦU NGÀY / ĐẦU THÁNG / NGÀY MAI / SINH NHẬT / NGÀY TƯƠNG LAI CHUNG CHUNG:
-        Mặc định chọn 09:00 sáng.
+      - MẶC ĐỊNH LUÔN LÀ 09:00 SÁNG của ngày được nhắc tới (kể cả deadline, báo cáo, nộp hồ sơ, email, họp, sinh nhật, ngày mai, ngày tương lai).
+        KHÔNG tự chọn 16:00 chỉ vì nội dung là deadline/báo cáo.
+      - Chỉ khi người dùng nói rõ buổi (sáng/trưa/chiều/tối/đêm, "cuối ngày", "cuối giờ chiều") mới dùng giờ của buổi đó (ví dụ chiều → 16:00, tối → 20:00).
       - "Đầu tháng X/YYYY": tính là ngày 01 của tháng X/YYYY lúc 09:00 sáng.
       - Nếu là việc trong ngày hôm nay:
         + Nếu hiện tại trước 09:00: chọn 09:00 hôm nay.
-        + Nếu hiện tại từ 09:00 đến trước 16:00: chọn 16:00 hôm nay.
-        + Nếu hiện tại từ 16:00 trở đi: nếu có chữ "tối nay" chọn 20:00; nếu không thì chuyển sang 09:00 sáng ngày hôm sau.
+        + Nếu hiện tại từ 09:00 trở đi và người dùng GHI RÕ "hôm nay"/"tối nay": chọn 16:00 hôm nay (sau 16:00 thì 20:00; sau 20:00 thì 09:00 sáng hôm sau).
+        + Nếu không ghi rõ ngày nào và đã qua 09:00: chọn 09:00 sáng ngày hôm sau.
       - Nếu là ngày âm lịch (giỗ, rằm, mùng 1) mà không có giờ: mặc định chọn 09:00 sáng.
 
 6. CHUYỂN ĐỔI NGƯỢC THÀNH CÚ PHÁP CHUẨN CỦA BOT ("standard_syntax"):

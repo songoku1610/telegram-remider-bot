@@ -131,6 +131,8 @@ ROUTING_CASES = [
     ("Họp với chị Mai lúc 9h", None, "Rule", 0, 1),
     # Tin thật từ người dùng: Dictionary phải giữ nguyên văn
     ("vụ tối ưu anh em chuyển sang chiều mai 4h 30 lên phòng anh nhé", None, "Dictionary", 0, 1),
+    ("Mai e email cho net nhé", None, "Dictionary", 0, 1),
+    ("Ngày mai Đào tuấn email cho NET về việc off", None, "Dictionary", 0, 1),
 
     ("Họp giao ban lúc 9h mai", None, "Rule", 0, 1),
     ("Tập gym lúc 18h T2,T4,T6", None, "Rule", 0, 3),

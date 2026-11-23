@@ -561,18 +561,14 @@ def format_reminder_listing(rows, title):
 
 
 def get_default_remind_time() -> datetime:
-    """Thời gian nhắc mặc định khi không xác định được thời gian:
-    - Trước 9h  → 9h hôm nay
-    - 9h–16h    → 16h hôm nay
-    - Sau 16h   → 9h sáng hôm sau
+    """Thời gian nhắc mặc định khi không xác định được thời gian: 9h sáng gần nhất.
+    - Trước 9h → 9h hôm nay
+    - Từ 9h    → 9h sáng hôm sau
     """
     now = datetime.now()
     if now.hour < 9:
         return now.replace(hour=9, minute=0, second=0, microsecond=0)
-    elif now.hour < 16:
-        return now.replace(hour=16, minute=0, second=0, microsecond=0)
-    else:
-        return (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    return (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
 
 # =========================
 # EXTRACT TIME (xịn)

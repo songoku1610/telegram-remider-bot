@@ -406,6 +406,9 @@ def _is_name_mai(buf: _Buf, start: int) -> bool:
     prev = before.split()[-1] if before.split() else ""
     if prev in _MAI_NAME_PREFIXES:
         return True
+    # "Mai ơi ..." → gọi tên người
+    if re.match(r"\s*ơi(?!\w)", buf.low[start + 3:]):
+        return True
     # Viết hoa "Mai" giữa câu → nhiều khả năng là tên riêng
     if buf.orig[start:start + 1] == "M" and start > 0 and buf.orig[start - 1] not in "\n":
         return True
@@ -683,14 +686,15 @@ def parse_with_dictionary(text: str, now: Optional[datetime] = None,
         return datetime(d.year, d.month, d.day, h, mi)
 
     def _smart_default(d: date, explicit_today: bool) -> datetime:
-        if d != now.date():
+        """Không ghi giờ → 09:00 sáng. Hôm nay đã qua 9h → 09:00 sáng mai,
+        trừ khi người dùng ghi rõ hôm nay (vẫn nhắc trong ngày: 16:00, sau 16h thì 20:00)."""
+        if d != now.date() or now.hour < 9:
             return _at(d, 9, 0)
-        if now.hour < 9:
-            return _at(d, 9, 0)
-        if now.hour < 16:
-            return _at(d, 16, 0)
-        if explicit_today and now.hour < 20:
-            return _at(d, 20, 0)
+        if explicit_today:
+            if now.hour < 16:
+                return _at(d, 16, 0)
+            if now.hour < 20:
+                return _at(d, 20, 0)
         return _at(d + timedelta(days=1), 9, 0)
 
     def _build(d: date, roll_days: int, explicit_today=False) -> datetime:
@@ -725,14 +729,20 @@ def parse_with_dictionary(text: str, now: Optional[datetime] = None,
             wd = _weekday_index(m.group(1))
             ref = m.group(2)
             if ref == "tuần này":
-                items.append((message, _build(monday + timedelta(days=wd), 0), repeat_type))
+                d = monday + timedelta(days=wd)
+                items.append((message, _build(d, 0, explicit_today=(d == now.date())), repeat_type))
             elif ref == "tuần sau":
                 items.append((message, _build(monday + timedelta(days=7 + wd), 0), repeat_type))
             else:
                 d = monday + timedelta(days=wd)
                 if d < now.date():
                     d += timedelta(days=7)
-                items.append((message, _build(d, 7), repeat_type))
+                # Thứ trùng hôm nay mà không ghi giờ → hiểu là hôm nay; nếu đã quá muộn trong ngày
+                # thì sang cùng thứ tuần sau (không được nhảy sang một ngày khác thứ)
+                dt = _build(d, 7, explicit_today=(d == now.date()))
+                if dt.date() != d and dt.weekday() != wd:
+                    dt = _at(d + timedelta(days=7), 9, 0)
+                items.append((message, dt, repeat_type))
     else:
         items.append((message, _build(now.date(), 1), repeat_type))
 

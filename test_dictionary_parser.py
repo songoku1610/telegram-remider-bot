@@ -52,13 +52,13 @@ CASES = [
 
     # ---------- ngày cụ thể ----------
     ("Sinh nhật vợ 20/12", [("Sinh nhật vợ", "20/12/2026 09:00", "none")]),
-    ("Nộp thuế ngày 05/01/2027", [("Nộp thuế", "05/01/2027 16:00", "none")]),
+    ("Nộp thuế ngày 05/01/2027", [("Nộp thuế", "05/01/2027 09:00", "none")]),
     ("Gia hạn hộ chiếu 2027-03-15", [("Gia hạn hộ chiếu", "15/03/2027 09:00", "none")]),
     ("đóng học phí 10/11", [("Đóng học phí", "10/11/2027 09:00", "none")]),
     ("Gửi hồ sơ ngày 5 tháng 12", [("Gửi hồ sơ", "05/12/2026 09:00", "none")]),
     ("họp tổng kết 20 tháng 12 năm 2026 lúc 14h", [("Họp tổng kết", "20/12/2026 14:00", "none")]),
     ("trả tiền nhà mùng 5", [("Trả tiền nhà", "05/12/2026 09:00", "none")]),
-    ("nộp báo cáo ngày 25", [("Nộp báo cáo", "25/11/2026 16:00", "none")]),
+    ("nộp báo cáo ngày 25", [("Nộp báo cáo", "25/11/2026 09:00", "none")]),
     ("họp ngày 5 tháng sau 9h", [("Họp", "05/12/2026 09:00", "none")]),
     ("khám định kỳ 20-11-26 lúc 8h", [("Khám định kỳ", "20/11/2026 08:00", "none")]),
     ("thi chứng chỉ 12.12.2026 7h", [("Thi chứng chỉ", "12/12/2026 07:00", "none")]),
@@ -71,16 +71,16 @@ CASES = [
     ("Đi chơi cuối tuần", [("Đi chơi", "21/11/2026 09:00", "none")]),
     ("dọn kho cuối tuần sau", [("Dọn kho", "28/11/2026 09:00", "none")]),
     ("họp đầu tuần sau", [("Họp", "23/11/2026 09:00", "none")]),
-    ("deadline dự án đầu tháng sau", [("Deadline dự án", "01/12/2026 16:00", "none")]),
+    ("deadline dự án đầu tháng sau", [("Deadline dự án", "01/12/2026 09:00", "none")]),
     ("Thanh toán thẻ tín dụng cuối tháng", [("Thanh toán thẻ tín dụng", "30/11/2026 09:00", "none")]),
     ("đóng bảo hiểm cuối tháng 2/2027", [("Đóng bảo hiểm", "28/02/2027 09:00", "none")]),
     ("tổng kết cuối năm", [("Tổng kết", "31/12/2026 09:00", "none")]),
     ("đi du lịch ngày kia 6h sáng", [("Đi du lịch", "20/11/2026 06:00", "none")]),
     ("sửa xe ngày mốt", [("Sửa xe", "20/11/2026 09:00", "none")]),
     ("họp lớp giờ này ngày mai", [("Họp lớp", "19/11/2026 10:00", "none")]),
-    ("nộp bài thứ 6 tuần sau nữa", [("Nộp bài", "04/12/2026 16:00", "none")]),
+    ("nộp bài thứ 6 tuần sau nữa", [("Nộp bài", "04/12/2026 09:00", "none")]),
     ("lên kế hoạch đầu tháng 1", [("Lên kế hoạch", "01/01/2027 09:00", "none")]),
-    ("Nộp báo cáo thứ sáu tuần sau", [("Nộp báo cáo", "27/11/2026 16:00", "none")]),
+    ("Nộp báo cáo thứ sáu tuần sau", [("Nộp báo cáo", "27/11/2026 09:00", "none")]),
 
     # ---------- ngày lễ ----------
     ("mua quà noel", [("Mua quà", "25/12/2026 09:00", "none")]),
@@ -177,8 +177,25 @@ CASES = [
     ("thứ 6 vui vẻ nhé mọi người", None),
     ("khi nào họp vậy", None),
     ("mấy giờ đi ăn", None),
-    ("7 ngày nữa là hết hạn trial", [("Là hết hạn trial", "25/11/2026 16:00", "none")]),  # có 'hết hạn' → coi là nhắc
+    ("7 ngày nữa là hết hạn trial", [("Là hết hạn trial", "25/11/2026 09:00", "none")]),  # có 'hết hạn' → coi là nhắc
     ("Nộp hồ sơ hôm nay", [("Nộp hồ sơ", "18/11/2026 16:00", "none")]),
+
+    # ----- tin thật: email/nhắn tin + "mai" không ghi giờ → 9h sáng -----
+    ("Mai e email cho net nhé", [("E email cho net", "19/11/2026 09:00", "none")]),
+    ("Ngày mai Đào tuấn email cho NET về việc off",
+     [("Đào tuấn email cho NET về việc off", "19/11/2026 09:00", "none")]),
+    ("mai nhắn zalo cho khách", [("Nhắn zalo cho khách", "19/11/2026 09:00", "none")]),
+    ("thứ 6 trả lời mail đối tác", [("Trả lời mail đối tác", "20/11/2026 09:00", "none")]),
+    ("chốt hợp đồng ngày 25", [("Chốt hợp đồng", "25/11/2026 09:00", "none")]),
+    # thứ trùng hôm nay (Thứ 4, 10h) không ghi giờ → vẫn trong hôm nay
+    ("họp thứ 4", [("Họp", "18/11/2026 16:00", "none")]),
+    # "Mai ơi" là gọi tên, không phải ngày mai
+    ("Mai ơi họp nhé", None),
+    ("Mai ơi mai họp nhé", [("Mai ơi họp", "19/11/2026 09:00", "none")]),
+    # từ khoá quá chung không còn kích hoạt
+    ("hôm nay mail nhiều quá", None),
+    ("zalo mai bị lỗi", None),
+    ("mai email được không", None),
 
     # ---------- lỗi tìm thấy ở vòng soát độ phủ ----------
     ("uống thuốc huyết áp 7h sáng và 7h tối hàng ngày", None),  # 2 liều → LLM tách

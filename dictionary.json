@@ -570,12 +570,8 @@
   ],
 
   "default_time_by_keyword": {
-    "note": "Chỉ dùng khi không có giờ cụ thể và không có từ chỉ buổi. Thứ tự ưu tiên: giờ cụ thể > buổi > từ khoá > get_default_remind_time(). Lấy từ quy tắc 5b trong prompt LLM.",
-    "rules": [
-      { "time": "16:00", "keywords": ["deadline", "dead line", "hạn chót", "hạn nộp", "hạn cuối", "hết hạn", "nộp", "báo cáo", "gửi báo cáo", "hoàn thành", "trước ngày", "due"] },
-      { "time": "09:00", "keywords": ["họp", "hop", "meeting", "giao ban", "sinh nhật", "sinh nhat", "giỗ", "gặp", "hẹn", "khám", "phỏng vấn", "đầu tháng"] },
-      { "time": "09:00", "keywords": ["âm lịch"], "note": "Ngày âm lịch không có giờ mặc định 09:00." }
-    ]
+    "note": "Chỉ dùng khi không có giờ cụ thể và không có từ chỉ buổi. Thứ tự ưu tiên: giờ cụ thể > buổi > từ khoá > mặc định. Mặc định (dictionary_parser._smart_default): 09:00 sáng của ngày đích; nếu là hôm nay mà đã qua 9h thì 09:00 sáng hôm sau, trừ khi ghi rõ 'hôm nay'/'tối nay' (khi đó nhắc trong ngày: 16:00, sau 16h thì 20:00). Âm lịch không giờ: 09:00. Đã bỏ quy tắc 16:00 cho deadline/nộp/báo cáo theo yêu cầu: không ghi giờ thì mặc định 9h sáng.",
+    "rules": []
   },
 
   "intent_keywords": [
@@ -586,7 +582,11 @@
     "sinh nhật", "giỗ", "đám", "cưới", "liên hoan", "tổng kết", "bay", "check", "kiểm tra", "review", "demo", "phỏng vấn",
     "tiêm", "xem", "đọc", "viết", "ăn", "nấu", "dọn", "tưới", "cúng", "tặng", "đặt", "sửa", "thay", "trực", "chấm",
     "tắt", "bật", "rút", "backup", "sao lưu", "nâng cấp", "cập nhật", "đá", "ngủ", "dậy", "thức",
-    "đổi", "giao ban", "bơi", "lễ", "chùa"
+    "đổi", "giao ban", "bơi", "lễ", "chùa",
+    "email", "e-mail", "gửi mail", "trả lời mail", "check mail", "nhắn", "nhắn tin", "ping", "inbox",
+    "báo lại", "báo cho", "báo giá", "thông báo", "trả lời", "phản hồi", "reply", "liên hệ", "liên lạc", "hỏi",
+    "xin nghỉ", "nghỉ phép", "xin phép", "trao đổi", "thảo luận", "chốt", "duyệt", "ký", "trình",
+    "submit", "soạn", "chuẩn bị", "hoàn thành", "lên phòng", "qua phòng"
   ],
 
   "blockers": {
