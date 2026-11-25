@@ -12,7 +12,22 @@ from zoneinfo import ZoneInfo
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 import telegrambot
-from datetime import date, timedelta
+import dictionary_parser
+from datetime import date, datetime, timedelta
+
+
+class _FrozenDatetime(datetime):
+    """Cố định 'bây giờ' = 08:00 hôm nay để kết quả không phụ thuộc giờ chạy test
+    (vd nhắc trước 15 phút của cuộc họp 14h sẽ bị bỏ nếu chạy test lúc 13h40)."""
+    NOW = datetime.combine(date.today(), datetime.min.time()).replace(hour=8)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.NOW if tz is None else cls.NOW.replace(tzinfo=tz)
+
+
+telegrambot.datetime = _FrozenDatetime
+dictionary_parser.datetime = _FrozenDatetime
 
 
 def _d(days):
@@ -135,12 +150,12 @@ ROUTING_CASES = [
     ("Tập gym t2 t4 t6 lúc 18h", None, "Dictionary", 0, 3),
     ("trực ca 20/11, 25/11 và 30/11 lúc 7h", None, "Dictionary", 0, 3),
     ("Họp với chị Mai lúc 9h", None, "Rule", 0, 3),
-    # Tin thật từ người dùng: Dictionary phải giữ nguyên văn
-    ("vụ tối ưu anh em chuyển sang chiều mai 4h 30 lên phòng anh nhé", None, "Dictionary", 0, 1),
-    ("Mai e email cho net nhé", None, "Dictionary", 0, 1),
-    ("vậy chiều nay khoảng 4h 30 anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2h là đẹp",
+    # Câu chat tự nhiên: Dictionary phải giữ nguyên văn
+    ("việc này chuyển sang chiều mai 4h 30 cả nhóm lên phòng nhé", None, "Dictionary", 0, 1),
+    ("Mai e email cho đối tác nhé", None, "Dictionary", 0, 1),
+    ("chiều nay khoảng 4h 30 cả nhóm hội ý tiếp, cố gắng rút ngắn thời gian còn 2h",
      None, "Dictionary", 0, 3),
-    ("Ngày mai Đào tuấn email cho NET về việc off", None, "Dictionary", 0, 1),
+    ("Ngày mai Văn An email cho Phòng Nhân sự về việc nghỉ phép", None, "Dictionary", 0, 1),
 
     ("Họp giao ban lúc 9h mai", None, "Rule", 0, 3),
     ("Tập gym lúc 18h T2,T4,T6", None, "Rule", 0, 3),

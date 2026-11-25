@@ -2,6 +2,10 @@
 
 Bot nhắc lịch cá nhân qua Telegram, hỗ trợ **lịch dương**, **lịch âm**, **thời tiết**, và **tóm tắt lịch định kỳ**.
 
+Người dùng có thể gõ theo cú pháp hoặc chat tự nhiên ("Mai e email cho đối tác nhé", "5h cả nhóm lên phòng làm tiếp"), kể cả tin forward. Tin nhắn đi qua 4 tầng **Rule → Dictionary → LLM → Default**; tầng Dictionary (từ điển `dictionary.json`) xử lý phần lớn câu tự nhiên nên rất ít khi phải gọi LLM. Tin xác nhận luôn ghi tầng đã nhận diện: `🏷 Nhận diện bởi: Rule / Dictionary / LLM / Default`.
+
+Tài liệu chi tiết về từ điển: [docs/dictionary.md](docs/dictionary.md).
+
 ---
 
 ## Mục lục
@@ -18,9 +22,12 @@ Bot nhắc lịch cá nhân qua Telegram, hỗ trợ **lịch dương**, **lịc
     - [Xóa reminder](#xóa-reminder)
     - [Tra cứu lịch âm/dương](#tra-cứu-lịch-âmdương)
     - [Thời tiết](#thời-tiết)
+  - [Quy tắc thời gian](#quy-tắc-thời-gian)
   - [Logic xử lý chính](#logic-xử-lý-chính)
     - [Khởi động \& Migration](#khởi-động--migration)
     - [Nhận diện \& phân tích câu lệnh](#nhận-diện--phân-tích-câu-lệnh)
+    - [Luồng Rule → Dictionary → LLM → Default](#luồng-rule--dictionary--llm--default)
+    - [Nhắc cuộc họp](#nhắc-cuộc-họp)
     - [Parse thời gian dương lịch](#parse-thời-gian-dương-lịch)
     - [Parse thời gian âm lịch](#parse-thời-gian-âm-lịch)
     - [Lịch âm – thuật toán chuyển đổi](#lịch-âm--thuật-toán-chuyển-đổi)
@@ -28,6 +35,8 @@ Bot nhắc lịch cá nhân qua Telegram, hỗ trợ **lịch dương**, **lịc
     - [Worker thời tiết tự động](#worker-thời-tiết-tự-động)
     - [Worker tóm tắt đầu tháng](#worker-tóm-tắt-đầu-tháng)
   - [Sơ đồ luồng xử lý](#sơ-đồ-luồng-xử-lý)
+  - [Kiểm thử](#kiểm-thử)
+  - [Hạn chế đã biết](#hạn-chế-đã-biết)
 
 ---
 
@@ -43,11 +52,24 @@ main.py
       │    ├── /list (/ls)
       │    ├── /delete (/del)
       │    └── MessageHandler  → add_reminder()  (xử lý toàn bộ text)
+      │                           ├── Rule        — parse_message() ... trong telegrambot.py
+      │                           ├── Dictionary  — dictionary_parser.py + dictionary.json
+      │                           ├── LLM         — llm_service.py (Gemini, dự phòng OpenRouter)
+      │                           └── Default     — cả câu làm nội dung, giờ mặc định
       └── Background workers (asyncio.create_task)
            ├── worker()                  — vòng lặp nhắc lịch mỗi 10 giây
            ├── weather_information_worker() — thời tiết tự động hàng ngày
            └── monthly_summary_worker()     — tóm tắt lịch 9h ngày 1 hàng tháng
 ```
+
+| File | Vai trò |
+|---|---|
+| `telegrambot.py` | Handler, tầng Rule, ghép luồng, lưu DB, worker |
+| `dictionary_parser.py` | Tầng Dictionary: đọc `dictionary.json`, bóc thời gian, dịch về cú pháp chuẩn |
+| `dictionary.json` | Từ điển: cụm từ, regex, buổi, từ khoá ý định, từ khoá họp, chặn, quy tắc giờ |
+| `llm_service.py` | Gọi Gemini/OpenRouter, prompt có quy tắc giờ mặc định |
+| `lunarcalendar.py` | Chuyển đổi âm ↔ dương |
+| `weather.py`, `weatherAPI.py` | Thời tiết |
 
 **Stack:**
 
@@ -58,6 +80,7 @@ main.py
 | ORM/Driver | mysql-connector-python |
 | Lịch âm | lunarcalendar.py (Ho Ngoc Duc 2004) |
 | Parse thời gian | dateparser + dateutil.relativedelta |
+| Hiểu câu tự nhiên | Từ điển `dictionary.json` (không tốn API), sau đó Gemini Flash / OpenRouter |
 | Timezone | `ZoneInfo("Asia/Ho_Chi_Minh")` |
 | Triển khai | Docker Compose (2 service: `bot` + `db`) |
 
@@ -79,20 +102,53 @@ docker compose logs -f bot
 > **Lần đầu** Docker tự chạy `mysql-init/01-init.sql` (tạo bảng + index).  
 > **Các lần sau** `migrate()` trong code kiểm tra `information_schema.columns` trước khi thêm cột. Cách này idempotent và tương thích cả các bản MySQL không hỗ trợ `ADD COLUMN IF NOT EXISTS`.
 
+### Triển khai production (server dùng git)
+
+Thư mục trên server là bản clone của repo; `.env`, `backup/` và volume MySQL không nằm trong git nên không bị ảnh hưởng khi cập nhật.
+
+```bash
+# Máy dev: commit và đẩy code
+git add <các file đã sửa>
+git commit -m "..."
+git push
+
+# Server
+cd <thư-mục-bot-trên-server>
+git pull
+./install.sh          # tự nhận biết lần đầu / cập nhật, build lại image và khởi động
+docker compose logs -f bot
+```
+
+- `install.sh --first` / `--update` để ép chế độ.
+- Image chỉ chứa các file được `COPY` trong `Dockerfile`. Khi thêm file `.py` hoặc `.json` mới mà code cần import/đọc, **phải thêm dòng `COPY` tương ứng**, nếu không bot sẽ lỗi `ModuleNotFoundError` khi chạy.
+- Không sửa code trực tiếp trên server; nếu lỡ sửa, `git status` sẽ báo và `git pull` có thể bị từ chối. Bỏ thay đổi cục bộ bằng `git reset --hard HEAD` rồi `git pull` lại.
+- Volume DB tên theo thư mục (`<tên-thư-mục>_db_data`), đổi tên thư mục server sẽ tạo volume mới rỗng.
+
 ---
 
 ## Biến môi trường
 
 | Biến | Mô tả | Ví dụ |
 |---|---|---|
-| `BOT_TOKEN` | Token Telegram Bot | `123456:ABC-DEF...` |
+| `BOT_TOKEN` | Token Telegram Bot | `<token từ @BotFather>` |
 | `DB_HOST` | Host MySQL | `db` |
 | `DB_USER` | User MySQL | `root` |
 | `DB_PASSWORD` | Password MySQL | `secret` |
 | `DB_NAME` | Database name | `reminder_bot` |
 | `TIME_INFORMATION` | Giờ gửi thời tiết tự động (`HH:MM`) | `06:30` |
-| `OPENWEATHER_API_KEY` | API key OpenWeatherMap | `abc123...` |
-| `DEFAULT_CITY` | Thành phố mặc định thời tiết | `Ho Chi Minh` |
+| `GOOGLE_API_KEY` | Key Google Weather (`weather.py`); cũng dùng cho Gemini nếu không có `GEMINI_API_KEY` | `<api-key>` |
+| `WEATHER_CITY` / `WEATHER_LOCATION` | Thành phố mặc định thời tiết | `Ho Chi Minh` |
+| `WEATHER_API_KEY` | Key cho dự báo ngày mai (`weatherAPI.py`) | `abc123...` |
+| `GEMINI_API_KEY` | Key Gemini cho tầng LLM | `<api-key>` |
+| `GEMINI_MODEL` | Model chính | `gemini-3.6-flash` |
+| `GEMINI_FALLBACK_MODELS` | Danh sách model dự phòng, phân tách bằng dấu phẩy | `gemini-3.5-flash-lite,...` |
+| `GEMINI_TIMEOUT_SECONDS` | Timeout mỗi lần gọi | `8` |
+| `OPENROUTER_API_KEY` | Key OpenRouter, dự phòng khi Gemini lỗi | `<api-key>` |
+| `OPENROUTER_MODELS` | Danh sách model OpenRouter | `meta-llama/llama-3.3-70b-instruct:free,...` |
+
+> `.env.example` vẫn còn `OPENWEATHER_API_KEY` / `DEFAULT_CITY` từ bản cũ; code hiện tại đọc các biến ở bảng trên.
+
+Không có key LLM thì bot vẫn chạy: câu không qua được Rule/Dictionary sẽ rơi xuống Default.
 
 ---
 
@@ -182,8 +238,20 @@ Nội dung lúc/at/vào <thời gian> [<tần suất>]
 | Thời gian tương đối | `30 phút nữa`, `2 giờ nữa` |
 | Âm lịch | Thêm `âm lịch` hoặc `lịch âm` vào câu |
 
-> Nếu không nhập giờ → mặc định **9:00**.  
+> Nếu không nhập giờ → mặc định **9:00 sáng** (chi tiết ở [Quy tắc thời gian](#quy-tắc-thời-gian)).  
 > Dạng thời gian-đứng-đầu tự động nhắc **sớm hơn 15 phút** so với giờ nhập.
+
+**Câu tự nhiên** (không cần đúng cú pháp, Dictionary hoặc LLM sẽ hiểu):
+
+```
+Mai e email cho đối tác nhé                       → 09:00 mai
+chiều nay hội ý dự án, còn 2h là hết hạn       → 16:00 hôm nay ("còn 2h" là thời lượng, không phải 2 giờ sáng)
+5h cả nhóm lên phòng làm tiếp nhé        → 17:00 hôm nay nếu gửi lúc chiều
+meeting với khách 10h sáng mai                 → 10:00 mai + nhắc trước 15 và 5 phút
+hội ý dự án 2 tiếng nữa                        → 2 tiếng sau + nhắc trước 15 và 5 phút
+```
+
+Với câu tự nhiên hoặc tin forward, bot **giữ nguyên văn tin gốc** làm nội dung nhắc (không cắt phần thời gian). Tin forward có thêm tiền tố `FW from <tên người gửi>: `.
 
 **Tần suất lặp cố định:**
 
@@ -278,6 +346,39 @@ delete <ID>
 
 ---
 
+## Quy tắc thời gian
+
+Áp dụng thống nhất ở Rule, Dictionary và prompt LLM.
+
+**Không ghi giờ:**
+
+| Trường hợp | Giờ nhắc |
+|---|---|
+| Ngày khác hôm nay ("mai", "thứ 6", "20/12") | 09:00 ngày đó |
+| Không ghi ngày, gửi trước 9h | 09:00 hôm nay |
+| Không ghi ngày, gửi sau 9h | 09:00 sáng mai |
+| Ghi rõ "hôm nay" và đã qua 9h | 16:00 hôm nay; sau 16h → 20:00; sau 20h → 09:00 mai |
+| Có buổi ("chiều nay", "tối mai") | Giờ mặc định của buổi: sáng 09:00, trưa 12:00, chiều 16:00, tối 20:00... (xem `periods` trong `dictionary.json`) |
+
+Không còn quy tắc 16:00 cho deadline/nộp/báo cáo: không ghi giờ thì luôn 9h sáng.
+
+**Giờ 1 chữ số không kèm buổi** (`5h`, `5h30`, `5 giờ`): nếu giờ sáng hôm nay đã qua mà giờ chiều tương ứng (+12) chưa tới thì hiểu là giờ chiều hôm nay. Áp dụng cho mọi tin, không riêng tin forward.
+
+| Câu | Gửi lúc | Kết quả |
+|---|---|---|
+| 5h cả nhóm lên phòng làm tiếp | 16:31 | 17:00 hôm nay |
+| 5h cả nhóm lên phòng làm tiếp | 18:30 | 05:00 sáng mai |
+| 9h gọi điện cho mẹ | 14:00 | 21:00 hôm nay |
+| **8h họp giao ban** | 14:00 | **08:00 sáng mai** (cuộc họp chỉ dời với 1h–6h) |
+| họp lúc 6h | 14:00 | 18:00 hôm nay |
+| họp lúc 5h mai / 5h sáng / 05h / 10h | bất kỳ | giữ nguyên, vì đã ghi ngày, buổi, hoặc giờ 2 chữ số |
+
+Khoảng giờ cấu hình trong `dictionary.json` → `bare_hour_pm`: `hours` (mặc định `[1, 9]`) cho tin thường, `meeting_hours` (mặc định `[1, 6]`) cho cuộc họp, để không đặt họp tối muộn. Không áp dụng cho lịch lặp và âm lịch.
+
+**Thời lượng không phải giờ:** "còn 2h", "mất 1 tiếng", "kéo dài 1h30", "tối đa 3h" được đổi thành "N tiếng" để không bị hiểu là 2 giờ sáng.
+
+---
+
 ## Logic xử lý chính
 
 ### Khởi động & Migration
@@ -313,15 +414,46 @@ run()
    └── ls <từ khoá>           → tìm kiếm
 7. del/delete <ID>            → xóa reminder
 8. Phát hiện "âm lịch/lịch âm" → parse_lunar_reminder()
-9. Còn lại                    → parse_message() → thêm reminder dương lịch
+9. Còn lại                    → luồng Rule → Dictionary → LLM → Default (bên dưới)
 ```
 
-Với tin nhắn phải qua LLM, nếu LLM xác định đó là cuộc họp, bot tạo thêm hai
-reminder trước giờ họp 15 phút và 5 phút. Ba reminder được lưu độc lập để worker
-hiện tại tiếp tục xử lý lịch lặp mà không cần cơ chế mới. V1 chưa gộp ba thông báo
-thành một bản ghi; giữ thiết kế này đơn giản cho đến khi số liệu vận hành cho thấy
-cần nâng cấp. Log `reminder_created` chỉ ghi ID người dùng, số reminder và cờ luồng,
-không ghi nội dung cuộc họp.
+---
+
+### Luồng Rule → Dictionary → LLM → Default
+
+```
+1. Rule        parse_multi_reminder() (nhiều thứ/ngày), parse_message() (1 lịch)
+               Kết quả chỉ được nhận khi qua rule_result_is_trustworthy(): loại khi câu
+               bắt đầu bằng số trần, khi tách nhiều lịch từ tin nhiều dòng, hoặc khi
+               nội dung Rule trả về còn sót mốc thời gian ("Họp thứ 4 lúc 9h").
+2. Dictionary  parse_with_dictionary(text) đọc dictionary.json, bóc thời gian và
+               DỊCH về cú pháp chuẩn "<nội dung> lúc HH:MM ngày DD/MM/YYYY [lặp]".
+               Cú pháp chuẩn được đưa lại cho parse_message() của Rule để tính giờ
+               → chỉ có MỘT nơi tính thời gian. Nếu Rule và Dictionary lệch nhau,
+               log dictionary_rule_mismatch và dùng kết quả của Rule.
+               Trả None (xuống LLM) khi không có từ khoá ý định, dính blocker
+               (câu hỏi, chuyện đã qua, thành ngữ), có ≥ 2 giờ khác nhau, câu quá dài...
+3. LLM         parse_with_gemini() → JSON → cú pháp chuẩn → Rule parse lại.
+4. Default     cả câu làm nội dung, giờ get_default_remind_time() (9h), kèm gợi ý cú pháp.
+```
+
+Tầng nhận diện được ghi cuối tin xác nhận (`🏷 Nhận diện bởi: ...`) và trong log.
+Với Dictionary, LLM và tin forward, nội dung nhắc là **nguyên văn tin gốc**.
+
+Sau bước 1–2, giờ trần 1 chữ số được hiệu chỉnh bằng `shift_bare_hour_to_pm()` (xem [Quy tắc thời gian](#quy-tắc-thời-gian)); khi giờ bị dời, log in `🕔 BARE HOUR → PM`.
+
+---
+
+### Nhắc cuộc họp
+
+Một lịch được coi là **cuộc họp** khi:
+
+- LLM trả `is_meeting = true`, hoặc
+- (Rule/Dictionary) câu có từ khoá trong `meeting_keywords` (họp, meeting, hội ý, giao ban, sync, phỏng vấn, gặp khách...) **và** người dùng ghi giờ cụ thể **và** không lặp **và** không phải âm lịch.
+
+Khi đó bot tạo thêm 2 reminder "Nhắc trước 15 phút: …" và "Nhắc trước 5 phút: …" ngoài lịch đúng giờ (`MEETING_ALERT_MINUTES` trong `telegrambot.py`). Mốc nào đã ở quá khứ thì bỏ qua (vd "họp 10 phút nữa" chỉ có nhắc trước 5 phút). Tin xác nhận có dòng `🔔 Nhắc thêm: trước 15 phút, trước 5 phút và đúng giờ`.
+
+Ba reminder được lưu độc lập để worker hiện tại xử lý như lịch thường. Log `reminder_created` chỉ ghi ID người dùng, số reminder, cờ `is_meeting` và nguồn, không ghi nội dung cuộc họp.
 
 ---
 
@@ -458,12 +590,23 @@ flowchart TD
     G -- không có --> G5[Tất cả]
     B -- del/delete --> H[Xóa theo ID]
     B -- Có âm lịch/lịch âm --> I[parse_lunar_reminder]
-    B -- Còn lại --> J[parse_message]
+    B -- Còn lại --> J{Rule}
 
     I --> K[lunar_to_solar → remind_at]
-    J --> L[parse_time / parse_time_new]
+    J -- nhận --> L[parse_time / parse_time_new]
+    J -- không --> D1{Dictionary}
+    D1 -- cú pháp chuẩn --> L
+    D1 -- không --> LL{LLM}
+    LL -- cú pháp chuẩn --> L
+    LL -- lỗi/không --> DF[Default 9h]
+    L --> BH[Giờ trần 1 chữ số → giờ chiều]
+    BH --> MT{Cuộc họp?}
+    MT -- có --> MA[+ nhắc trước 15p, 5p]
+    MT -- không --> M2
+    MA --> M2
+    DF --> M2
     K --> M[Lưu DB is_lunar=TRUE]
-    L --> M2[Lưu DB is_lunar=FALSE]
+    M2[Lưu DB is_lunar=FALSE]
 
     subgraph Workers nền
         W1[worker — 10s\nNhắc đúng giờ\nNhắc trước 1 ngày] 
@@ -471,3 +614,25 @@ flowchart TD
         W3[monthly_summary_worker — 30s\nTóm tắt 9h ngày 1 hàng tháng]
     end
 ```
+
+---
+
+## Kiểm thử
+
+Chạy bằng `python` thường (không cần pytest), không cần DB hay API key:
+
+| Lệnh | Nội dung |
+|---|---|
+| `python test_dictionary_parser.py` | ~170 câu qua tầng Dictionary với thời điểm cố định (thứ 4, 18/11/2026 10:00), gồm câu tự nhiên, câu phải trả None, thời lượng, giờ trần, âm lịch |
+| `python test_parse_routing.py` | Toàn bộ `add_reminder()` với DB giả, LLM giả và giờ cố định 08:00 hôm nay: kiểm tra tầng nhận diện, số lần gọi LLM, số lịch được lưu, nhắc họp |
+| `python test_llm_flow.py` | Cú pháp LLM chuẩn hoá có parse được không, prompt, lọc mốc nhắc họp đã qua |
+
+Khi sửa `dictionary.json`, chạy lại cả ba. Thêm câu thực tế bị nhận sai vào `test_dictionary_parser.py` trước khi sửa từ điển.
+
+---
+
+## Hạn chế đã biết
+
+- **Giờ hôm nay đã qua vẫn được lưu** ("nộp báo cáo chiều nay" gửi lúc 17h, "họp 2h chiều nay" gửi lúc 16h): lịch có giờ trong quá khứ nên worker gửi ngay ở lượt quét kế tiếp.
+- **Giờ 1h–5h khi cả giờ sáng lẫn giờ chiều hôm nay đã qua** ("gọi khách 3h" lúc 16:31) → 03:00 sáng mai.
+- **Cú pháp giờ đứng đầu trừ 15 phút** ("5h30 họp" → 17:15), cộng với nhắc họp 15/5 phút nên bị nhắc sớm hai lần.

@@ -180,10 +180,10 @@ CASES = [
     ("7 ngày nữa là hết hạn trial", [("Là hết hạn trial", "25/11/2026 09:00", "none")]),  # có 'hết hạn' → coi là nhắc
     ("Nộp hồ sơ hôm nay", [("Nộp hồ sơ", "18/11/2026 16:00", "none")]),
 
-    # ----- tin thật: email/nhắn tin + "mai" không ghi giờ → 9h sáng -----
-    ("Mai e email cho net nhé", [("E email cho net", "19/11/2026 09:00", "none")]),
-    ("Ngày mai Đào tuấn email cho NET về việc off",
-     [("Đào tuấn email cho NET về việc off", "19/11/2026 09:00", "none")]),
+    # ----- email/nhắn tin + "mai" không ghi giờ → 9h sáng -----
+    ("Mai e email cho đối tác nhé", [("E email cho đối tác", "19/11/2026 09:00", "none")]),
+    ("Ngày mai Văn An email cho Phòng Nhân sự về việc nghỉ phép",
+     [("Văn An email cho Phòng Nhân sự về việc nghỉ phép", "19/11/2026 09:00", "none")]),
     ("mai nhắn zalo cho khách", [("Nhắn zalo cho khách", "19/11/2026 09:00", "none")]),
     ("thứ 6 trả lời mail đối tác", [("Trả lời mail đối tác", "20/11/2026 09:00", "none")]),
     ("chốt hợp đồng ngày 25", [("Chốt hợp đồng", "25/11/2026 09:00", "none")]),
@@ -193,8 +193,8 @@ CASES = [
     ("Mai ơi họp nhé", None),
     ("Mai ơi mai họp nhé", [("Mai ơi họp", "19/11/2026 09:00", "none")]),
     # ----- buổi + "nay" và khoảng thời gian (duration) không bị hiểu là giờ nhắc -----
-    ("vậy chiều nay khoảng 4h 30 anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2h là đẹp",
-     [("Vậy anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2 tiếng là đẹp", "18/11/2026 16:30", "none")]),
+    ("chiều nay khoảng 4h 30 cả nhóm hội ý tiếp, cố gắng rút ngắn thời gian còn 2h",
+     [("Cả nhóm hội ý tiếp, cố gắng rút ngắn thời gian còn 2 tiếng", "18/11/2026 16:30", "none")]),
     ("sáng nay 10h30 họp, dự kiến kéo dài 2 tiếng", [("Họp, dự kiến kéo dài 2 tiếng", "18/11/2026 10:30", "none")]),
     ("tối nay 8h ôn thi, mất khoảng 1h30", [("Ôn thi, mất 1 tiếng 30 phút", "18/11/2026 20:00", "none")]),
     ("chiều nay 3h họp tối đa 1h", [("Họp tối đa 1 tiếng", "18/11/2026 15:00", "none")]),
@@ -203,8 +203,8 @@ CASES = [
     ("còn 2h nữa họp", [("Còn họp", "18/11/2026 12:00", "none")]),
 
     # ----- giờ trần 1 chữ số, 5h sáng đã qua (NOW 10:00) → 17h hôm nay, không phải 5h sáng mai -----
-    ("5h anh em lên phòng anh tiếp vụ này nhé",
-     [("Anh em lên phòng anh tiếp vụ này", "18/11/2026 17:00", "none")]),
+    ("5h cả nhóm lên phòng làm tiếp nhé",
+     [("Cả nhóm lên phòng làm tiếp", "18/11/2026 17:00", "none")]),
     ("họp lúc 5h30", [("Họp", "18/11/2026 17:30", "none")]),
     ("họp lúc 5h hôm nay", [("Họp", "18/11/2026 17:00", "none")]),
     # cuộc họp chỉ dời 1–6h; họp 7/8/9h đã qua giờ sáng → sáng hôm sau, không họp tối muộn

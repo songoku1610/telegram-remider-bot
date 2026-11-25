@@ -157,7 +157,7 @@ NHIỆM VỤ CỦA BẠN:
       - Giữ nguyên giờ đó (chuyển sang định dạng HH:MM 24h).
       - Giờ 1 chữ số (1h–9h) KHÔNG kèm buổi (sáng/chiều/tối) và KHÔNG nói ngày khác hôm nay:
         nếu giờ sáng đó hôm nay đã qua nhưng giờ chiều/tối tương ứng (+12h) chưa tới → hiểu là giờ chiều/tối hôm nay.
-        Ví dụ: hiện tại 16:31, "5h anh em lên phòng anh" → 17:00 hôm nay (KHÔNG phải 05:00 sáng mai).
+        Ví dụ: hiện tại 16:31, "5h cả nhóm lên phòng làm tiếp" → 17:00 hôm nay (KHÔNG phải 05:00 sáng mai).
         Riêng CUỘC HỌP chỉ áp dụng cho 1h–6h; họp 7h/8h/9h mà giờ sáng hôm nay đã qua → sáng hôm sau
         (không đặt họp tối muộn). Ví dụ: hiện tại 14:00, "8h họp giao ban" → 08:00 sáng mai.
       - "has_explicit_time": true

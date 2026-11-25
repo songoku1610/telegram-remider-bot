@@ -1,5 +1,13 @@
 # Kế Hoạch Nâng Cấp Telegram Reminder Bot: Tích Hợp LLM Gemini Flash
 
+> **Ghi chú (11/2026):** Đây là tài liệu kế hoạch ban đầu, giữ lại để tham khảo. Hiện trạng đã khác ở các điểm sau:
+> - Có thêm tầng **Dictionary** (`dictionary.json`) giữa Rule và LLM, nên phần lớn câu tự nhiên không cần gọi LLM. Xem [dictionary.md](dictionary.md).
+> - Đã **bỏ quy tắc 16h** cho deadline/nộp/báo cáo: không ghi giờ thì mặc định 9h sáng (16h chỉ dùng khi ghi rõ "hôm nay" mà đã qua 9h).
+> - Nhắc trước 15 và 5 phút cho cuộc họp áp dụng cho cả Rule và Dictionary, không riêng LLM.
+> - Giờ 1 chữ số không kèm buổi gửi lúc chiều được hiểu là giờ chiều; cuộc họp chỉ dời với 1h–6h.
+>
+> Hành vi hiện tại được mô tả trong [README](../README.md).
+
 Tài liệu này phân tích kiến trúc hiện tại, xác định khoảng trống nghiệp vụ và đề xuất lộ trình chi tiết để tích hợp Google Gemini Flash API vào Telegram Reminder Bot. Mục tiêu là cho phép bot hiểu ngôn ngữ tự nhiên tiếng Việt của người dùng, tự động chuẩn hóa về cú pháp chuẩn của hệ thống, và áp dụng quy tắc gợi ý giờ thông minh (9h sáng / 16h chiều) khi thiếu thông tin thời gian.
 
 ---
