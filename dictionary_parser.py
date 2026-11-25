@@ -107,6 +107,9 @@ class _Dictionary:
             (_phrase_regex(r["keywords"]), r["time"]) for r in d["default_time_by_keyword"]["rules"]
         ]
         self.intent_re = _phrase_regex(d.get("intent_keywords", []) or ["nhắc"])
+        self.meeting_re = _phrase_regex(d.get("meeting_keywords", {}).get("keywords", []) or ["họp"])
+        self.bare_hour_pm = tuple(d.get("bare_hour_pm", {}).get("hours", [1, 9]))
+        self.bare_hour_pm_meeting = tuple(d.get("bare_hour_pm", {}).get("meeting_hours", [1, 6]))
 
         blockers = d.get("blockers", {})
         endings = blockers.get("question_endings", [])
@@ -565,6 +568,66 @@ def contains_time_expression(text: str, now: Optional[datetime] = None) -> bool:
     return _analyze(text, now, load_dictionary()).has_time_expression()
 
 
+def is_meeting_text(text: str) -> bool:
+    """True nếu câu có từ khoá cuộc họp (meeting_keywords trong dictionary.json)."""
+    if not text:
+        return False
+    return bool(load_dictionary().meeting_re.search(unicodedata.normalize("NFKC", text).lower()))
+
+
+def has_explicit_clock_time(text: str, now: Optional[datetime] = None) -> bool:
+    """True nếu người dùng ghi giờ cụ thể (8h, 14:30, 4 rưỡi, 15 phút nữa...), không tính buổi/ngày."""
+    if not text or not text.strip():
+        return False
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    a = _analyze(text, now, load_dictionary())
+    return bool(a.times or a.rels)
+
+
+def _bare_hour_pm(a: _Analysis, dct: _Dictionary, remind_time: datetime, repeat_type, now: datetime,
+                  text: str = "") -> datetime:
+    """Giờ trần 1 chữ số không kèm buổi ('5h', '5h30'): nếu giờ sáng hôm nay đã qua mà giờ chiều (+12)
+    chưa tới → nhắc giờ chiều hôm nay. Không áp dụng khi có buổi, có ngày/thứ khác hôm nay, lặp, âm lịch.
+    Câu là cuộc họp → chỉ dời với khoảng giờ hẹp hơn (meeting_hours, mặc định 1–6h): họp 7h/8h/9h
+    gửi lúc chiều vẫn là sáng hôm sau, không đặt họp tối muộn."""
+    if (repeat_type or "none") != "none" or a.is_lunar or a.period:
+        return remind_time
+    if a.rels or a.dates or a.weekdays or a.repeats:
+        return remind_time
+    if any(m.group(1) != "hôm nay" for m in a.dayrefs):
+        return remind_time
+    tokens = {(m.group(1), m.group(2)) for m in a.times}
+    if len(tokens) != 1:
+        return remind_time
+    h_str, mi_str = tokens.pop()
+    is_meeting = bool(text) and bool(dct.meeting_re.search(unicodedata.normalize("NFKC", text).lower()))
+    lo, hi = dct.bare_hour_pm_meeting if is_meeting else dct.bare_hour_pm
+    if len(h_str) != 1 or not lo <= int(h_str) <= hi:
+        return remind_time  # '05h', '10h', '11h' giữ nguyên
+    today = now.date()
+    if remind_time.date() not in (today, today + timedelta(days=1)):
+        return remind_time
+    am = datetime(today.year, today.month, today.day, int(h_str), int(mi_str))
+    pm = am + timedelta(hours=12)
+    # Lệch so với giờ đã ghi (vd Rule cú pháp giờ-trước tự trừ 15 phút) → giữ nguyên độ lệch
+    offset = datetime.combine(today, remind_time.time()) - am
+    if abs(offset) > timedelta(minutes=30):
+        return remind_time  # đã được hiểu là giờ khác (vd đã +12) → không đụng
+    if am <= now < pm:
+        return pm + offset
+    return remind_time
+
+
+def shift_bare_hour_to_pm(text: str, remind_time: datetime, repeat_type="none",
+                          now: Optional[datetime] = None) -> datetime:
+    """Dùng cho kết quả của Rule: áp cùng quy tắc giờ trần buổi chiều như Dictionary."""
+    if not text or not remind_time:
+        return remind_time
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    dct = load_dictionary()
+    return _bare_hour_pm(_analyze(text, now, dct), dct, remind_time, repeat_type, now, text)
+
+
 def parse_with_dictionary(text: str, now: Optional[datetime] = None,
                           dictionary: Optional[_Dictionary] = None) -> Optional[DictionaryResult]:
     """Chuẩn hoá câu bằng từ điển. Trả None nếu không chắc chắn (để rơi xuống LLM)."""
@@ -588,7 +651,8 @@ def parse_with_dictionary(text: str, now: Optional[datetime] = None,
     if not dct.intent_re.search(probe):
         return None
 
-    a = _analyze(text, now, dct)
+    analysis = _analyze(text, now, dct)
+    a = analysis
     buf, low, original_low, spans = a.buf, a.low, a.original_low, a.spans
     is_lunar, lunar_date, period = a.is_lunar, a.lunar_date, a.period
     rels, times, dates, weekdays, dayrefs, repeats = a.rels, a.times, a.dates, a.weekdays, a.dayrefs, a.repeats
@@ -746,6 +810,9 @@ def parse_with_dictionary(text: str, now: Optional[datetime] = None,
     else:
         items.append((message, _build(now.date(), 1), repeat_type))
 
+    if len(items) == 1:
+        m, dt, r = items[0]
+        items = [(m, _bare_hour_pm(analysis, dct, dt, r, now, text), r)]
     items.sort(key=lambda x: x[1])
     return _result(items, auto_time=auto_time)
 

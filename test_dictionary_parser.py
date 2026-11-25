@@ -192,6 +192,33 @@ CASES = [
     # "Mai ơi" là gọi tên, không phải ngày mai
     ("Mai ơi họp nhé", None),
     ("Mai ơi mai họp nhé", [("Mai ơi họp", "19/11/2026 09:00", "none")]),
+    # ----- buổi + "nay" và khoảng thời gian (duration) không bị hiểu là giờ nhắc -----
+    ("vậy chiều nay khoảng 4h 30 anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2h là đẹp",
+     [("Vậy anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2 tiếng là đẹp", "18/11/2026 16:30", "none")]),
+    ("sáng nay 10h30 họp, dự kiến kéo dài 2 tiếng", [("Họp, dự kiến kéo dài 2 tiếng", "18/11/2026 10:30", "none")]),
+    ("tối nay 8h ôn thi, mất khoảng 1h30", [("Ôn thi, mất 1 tiếng 30 phút", "18/11/2026 20:00", "none")]),
+    ("chiều nay 3h họp tối đa 1h", [("Họp tối đa 1 tiếng", "18/11/2026 15:00", "none")]),
+    ("trưa nay 12h ăn cơm với khách", [("Ăn cơm với khách", "18/11/2026 12:00", "none")]),
+    # "còn 2h nữa" vẫn là thời gian tương đối
+    ("còn 2h nữa họp", [("Còn họp", "18/11/2026 12:00", "none")]),
+
+    # ----- giờ trần 1 chữ số, 5h sáng đã qua (NOW 10:00) → 17h hôm nay, không phải 5h sáng mai -----
+    ("5h anh em lên phòng anh tiếp vụ này nhé",
+     [("Anh em lên phòng anh tiếp vụ này", "18/11/2026 17:00", "none")]),
+    ("họp lúc 5h30", [("Họp", "18/11/2026 17:30", "none")]),
+    ("họp lúc 5h hôm nay", [("Họp", "18/11/2026 17:00", "none")]),
+    # cuộc họp chỉ dời 1–6h; họp 7/8/9h đã qua giờ sáng → sáng hôm sau, không họp tối muộn
+    ("họp lúc 9h", [("Họp", "19/11/2026 09:00", "none")]),
+    ("8h họp giao ban", [("Họp giao ban", "19/11/2026 08:00", "none")]),
+    ("họp lúc 6h", [("Họp", "18/11/2026 18:00", "none")]),
+    # không phải họp → vẫn dời tới 9h tối
+    ("9h gọi điện cho mẹ", [("Gọi điện cho mẹ", "18/11/2026 21:00", "none")]),
+    # không áp dụng: có ngày khác hôm nay, có buổi, giờ 2 chữ số, lặp lại
+    ("họp lúc 5h mai", [("Họp", "19/11/2026 05:00", "none")]),
+    ("họp 5h sáng mai", [("Họp", "19/11/2026 05:00", "none")]),
+    ("họp lúc 05h", [("Họp", "19/11/2026 05:00", "none")]),
+    ("họp 5h thứ 6", [("Họp", "20/11/2026 05:00", "none")]),
+
     # từ khoá quá chung không còn kích hoạt
     ("hôm nay mail nhiều quá", None),
     ("zalo mai bị lỗi", None),

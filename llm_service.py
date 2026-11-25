@@ -155,6 +155,11 @@ NHIỆM VỤ CỦA BẠN:
 5. QUY TẮC SUY LUẬN THỜI GIAN & FALLBACK 9H SÁNG / 16H CHIỀU:
    a. Người dùng có nói giờ cụ thể (ví dụ 10h, 8h30 sáng, 4 rưỡi chiều):
       - Giữ nguyên giờ đó (chuyển sang định dạng HH:MM 24h).
+      - Giờ 1 chữ số (1h–9h) KHÔNG kèm buổi (sáng/chiều/tối) và KHÔNG nói ngày khác hôm nay:
+        nếu giờ sáng đó hôm nay đã qua nhưng giờ chiều/tối tương ứng (+12h) chưa tới → hiểu là giờ chiều/tối hôm nay.
+        Ví dụ: hiện tại 16:31, "5h anh em lên phòng anh" → 17:00 hôm nay (KHÔNG phải 05:00 sáng mai).
+        Riêng CUỘC HỌP chỉ áp dụng cho 1h–6h; họp 7h/8h/9h mà giờ sáng hôm nay đã qua → sáng hôm sau
+        (không đặt họp tối muộn). Ví dụ: hiện tại 14:00, "8h họp giao ban" → 08:00 sáng mai.
       - "has_explicit_time": true
    b. Người dùng KHÔNG nói giờ cụ thể ("has_explicit_time": false):
       - MẶC ĐỊNH LUÔN LÀ 09:00 SÁNG của ngày được nhắc tới (kể cả deadline, báo cáo, nộp hồ sơ, email, họp, sinh nhật, ngày mai, ngày tương lai).

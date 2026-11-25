@@ -13,6 +13,7 @@ from telegrambot import (
     LUNAR_KEYWORDS_RE,
     format_reminder_listing,
     build_llm_meeting_reminders,
+    build_meeting_reminders,
 )
 from llm_service import build_system_instruction
 
@@ -87,6 +88,18 @@ def test_llm_meeting_creates_main_and_pre_reminders():
     ]
 
 
+def test_meeting_skips_alerts_already_past():
+    now = datetime(2026, 11, 25, 9, 50)
+    meeting_time = datetime(2026, 11, 25, 10, 0)  # còn 10 phút: mốc trước 15p đã qua
+
+    reminders = build_meeting_reminders("Họp", meeting_time, "none", now=now)
+
+    assert reminders == [
+        ("Họp", meeting_time, "none"),
+        ("Nhắc trước 5 phút: Họp", datetime(2026, 11, 25, 9, 55), "none"),
+    ]
+
+
 def test_migration_uses_metadata_check_before_adding_columns():
     class FakeCursor:
         def __init__(self):
@@ -142,4 +155,5 @@ if __name__ == "__main__":
     test_system_prompt()
     test_reminder_listing_groups_matching_content_and_repeat_type()
     test_llm_meeting_creates_main_and_pre_reminders()
+    test_meeting_skips_alerts_already_past()
     test_migration_uses_metadata_check_before_adding_columns()

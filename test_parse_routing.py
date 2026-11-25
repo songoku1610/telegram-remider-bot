@@ -12,6 +12,12 @@ from zoneinfo import ZoneInfo
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 import telegrambot
+from datetime import date, timedelta
+
+
+def _d(days):
+    """Ngày DD/MM/YYYY cách hôm nay `days` ngày (dữ liệu LLM giả luôn ở tương lai)."""
+    return (date.today() + timedelta(days=days)).strftime("%d/%m/%Y")
 
 
 class FakeCursor:
@@ -96,18 +102,18 @@ ROUTING_CASES = [
     # ----- toàn bộ ví dụ trong tin help: phải vẫn đi qua Rule -----
     # Rule không đọc được "3h chiều" (parse_time trả None, kể cả trước khi có Dictionary) → Dictionary bắt
     ("Họp với team lúc 3h chiều hàng ngày", None, "Dictionary", 0, 1),
-    ("14.00 Họp giao ban", None, "Rule", 0, 1),
-    ("Thứ 4, 14.00 Họp giao ban", None, "Rule", 0, 1),
-    ("T4 14.00 Họp giao ban", None, "Rule", 0, 1),
+    ("14.00 Họp giao ban", None, "Rule", 0, 3),
+    ("Thứ 4, 14.00 Họp giao ban", None, "Rule", 0, 3),
+    ("T4 14.00 Họp giao ban", None, "Rule", 0, 3),
     ("T4-14.00 Họp giao ban", None, "Rule", 0, 1),
-    ("10h T3 Họp với đối tác", None, "Rule", 0, 1),
-    ("T4, 14.00 A.XYZ họp rà soát Kế hoạch", None, "Rule", 0, 1),
+    ("10h T3 Họp với đối tác", None, "Rule", 0, 3),
+    ("T4, 14.00 A.XYZ họp rà soát Kế hoạch", None, "Rule", 0, 3),
     ("Làm dự toán vào 8h ngày 02/05/2027 hàng tháng", None, "Rule", 0, 1),
     ("Khám định kỳ lúc 9h ngày 15/07/2027 mỗi 6 tháng", None, "Rule", 0, 1),
     ("Uống thuốc lúc 8h hôm nay mỗi 3 ngày", None, "Rule", 0, 1),
     ("Gia hạn domain lúc 9h ngày 05/06/2027 mỗi 2 năm", None, "Rule", 0, 1),
     ("Họp lúc 9h T2, T4, T6 hàng tuần", None, "Rule", 0, 3),
-    ("Họp lúc 9h T2, T4, T6", None, "Rule", 0, 3),
+    ("Họp lúc 9h T2, T4, T6", None, "Rule", 0, 9),
     ("Nộp BC lúc 17h ngày 5, 20 hàng tháng", None, "Rule", 0, 2),
     ("Nộp BC lúc 17h ngày 5, 20", None, "Rule", 0, 2),
     ("Kỷ niệm lúc 8h ngày 20/6, 25/7 hàng năm", None, "Rule", 0, 2),
@@ -116,11 +122,11 @@ ROUTING_CASES = [
     ("Cúng rằm tháng 7 lúc 9h âm lịch hàng năm", None, "Rule", 0, 1),
     ("Mùng 1 tháng giêng 8h Chúc tết âm lịch", None, "Rule", 0, 1),
     ("Giỗ cụ lúc 8h ngày 10/2 âm lịch mỗi 1 năm", None, "Rule", 0, 1),
-    ("14.00 Họp giao ban\nChuẩn bị số liệu ngày 20/11", None, "Rule", 0, 1),
+    ("14.00 Họp giao ban\nChuẩn bị số liệu ngày 20/11", None, "Rule", 0, 3),
 
     # ----- Rule từng bắt nhầm → giờ bị chặn, chuyển xuống Dictionary -----
-    ("Họp thứ 4 lúc 9h", None, "Dictionary", 0, 1),
-    ("họp tổng kết 20 tháng 12 năm 2026 lúc 14h", None, "Dictionary", 0, 1),
+    ("Họp thứ 4 lúc 9h", None, "Dictionary", 0, 3),
+    ("họp tổng kết 20 tháng 12 năm 2026 lúc 14h", None, "Dictionary", 0, 3),
     ("15 phút nữa gọi lại khách", None, "Dictionary", 0, 1),
     ("2 giờ chiều mai đi khám", None, "Dictionary", 0, 1),
     ("10 người đi ăn tối mai", None, "Dictionary", 0, 1),
@@ -128,18 +134,28 @@ ROUTING_CASES = [
     ("Backup dữ liệu 3 ngày 1 lần lúc 23h", None, "Dictionary", 0, 1),
     ("Tập gym t2 t4 t6 lúc 18h", None, "Dictionary", 0, 3),
     ("trực ca 20/11, 25/11 và 30/11 lúc 7h", None, "Dictionary", 0, 3),
-    ("Họp với chị Mai lúc 9h", None, "Rule", 0, 1),
+    ("Họp với chị Mai lúc 9h", None, "Rule", 0, 3),
     # Tin thật từ người dùng: Dictionary phải giữ nguyên văn
     ("vụ tối ưu anh em chuyển sang chiều mai 4h 30 lên phòng anh nhé", None, "Dictionary", 0, 1),
     ("Mai e email cho net nhé", None, "Dictionary", 0, 1),
+    ("vậy chiều nay khoảng 4h 30 anh em mình hội ý tiếp vụ này, cố găng rút ngắn thời gian còn 2h là đẹp",
+     None, "Dictionary", 0, 3),
     ("Ngày mai Đào tuấn email cho NET về việc off", None, "Dictionary", 0, 1),
 
-    ("Họp giao ban lúc 9h mai", None, "Rule", 0, 1),
+    ("Họp giao ban lúc 9h mai", None, "Rule", 0, 3),
     ("Tập gym lúc 18h T2,T4,T6", None, "Rule", 0, 3),
     ("Giỗ ông nội lúc 8h ngày 15/3 âm lịch", None, "Rule", 0, 1),
-    ("mai 9h họp", None, "Dictionary", 0, 1),
-    ("Họp chiều mai 3h", None, "Dictionary", 0, 1),
+    ("mai 9h họp", None, "Dictionary", 0, 3),
+    ("Họp chiều mai 3h", None, "Dictionary", 0, 3),
     ("gọi điện cho mẹ 30p nữa", None, "Dictionary", 0, 1),
+    # ----- cuộc họp: nhắc trước 15p, 5p và đúng giờ -----
+    ("meeting với khách 10h sáng mai", None, "Dictionary", 0, 3),
+    ("hội ý dự án 2 tiếng nữa", None, "Dictionary", 0, 3),
+    ("họp 10 phút nữa", None, "Dictionary", 0, 2),        # mốc trước 15p đã qua → bỏ
+    ("họp mai", None, "Dictionary", 0, 1),                # không ghi giờ → không nhắc trước
+    ("Họp lúc chiều mai", None, "Rule", 0, 1),            # Rule tự đặt giờ, không có giờ cụ thể
+    ("họp mỗi thứ 2 lúc 8h30", None, "Dictionary", 0, 1), # lặp lại → không nhắc trước
+    ("Gọi cho khách lúc 9h mai", None, "Rule", 0, 1),     # không phải họp
     ("Sinh nhật vợ 20/12", None, "Dictionary", 0, 1),
     ("Trung thu mua bánh", None, "Dictionary", 0, 1),
     ("học tiếng anh thứ ba và thứ năm 20h", None, "Dictionary", 0, 2),
@@ -167,11 +183,11 @@ ROUTING_CASES = [
     (
         "Lịch họp tuần:\n- T2 9h họp giao ban\n- T4 14h họp dự án\n- T6 10h review",
         {"is_reminder": True, "reminders": [
-            {"clean_message": "Họp giao ban", "standard_syntax": "Họp giao ban lúc 09:00 ngày 23/11/2026",
+            {"clean_message": "Họp giao ban", "standard_syntax": f"Họp giao ban lúc 09:00 ngày {_d(2)}",
              "has_explicit_time": True, "is_meeting": True, "repeat_type": "none", "is_lunar": False},
-            {"clean_message": "Họp dự án", "standard_syntax": "Họp dự án lúc 14:00 ngày 25/11/2026",
+            {"clean_message": "Họp dự án", "standard_syntax": f"Họp dự án lúc 14:00 ngày {_d(3)}",
              "has_explicit_time": True, "is_meeting": True, "repeat_type": "none", "is_lunar": False},
-            {"clean_message": "Review", "standard_syntax": "Review lúc 10:00 ngày 27/11/2026",
+            {"clean_message": "Review", "standard_syntax": f"Review lúc 10:00 ngày {_d(4)}",
              "has_explicit_time": True, "is_meeting": True, "repeat_type": "none", "is_lunar": False},
         ], "reply_text": None},
         "LLM", 1, 9,  # 3 cuộc họp x (lịch chính + nhắc trước 15p + 5p)
@@ -194,7 +210,7 @@ def test_routing():
             problems.append(f"insert {len(inserted)} lịch (kỳ vọng {n_insert})")
         # Dictionary: nội dung lưu phải là nguyên văn tin gốc (không cắt phần thời gian)
         if source == "Dictionary":
-            wrong = [p[1] for p in inserted if p[1] != text]
+            wrong = [p[1] for p in inserted if p[1] != text and not p[1].startswith("Nhắc trước")]
             if wrong:
                 problems.append(f"nội dung bị cắt: {wrong[0]!r}")
         if problems:
