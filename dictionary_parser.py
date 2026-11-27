@@ -26,6 +26,7 @@ from dateutil.relativedelta import relativedelta
 from lunarcalendar import lunar_to_solar, solar_to_lunar
 
 DICTIONARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dictionary.json")
+INTENTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intents.json")
 
 MAX_TEXT_LENGTH = 300
 MAX_LINES = 3
@@ -106,18 +107,31 @@ class _Dictionary:
         self.keyword_rules = [
             (_phrase_regex(r["keywords"]), r["time"]) for r in d["default_time_by_keyword"]["rules"]
         ]
-        self.intent_re = _phrase_regex(d.get("intent_keywords", []) or ["nhắc"])
-        self.meeting_re = _phrase_regex(d.get("meeting_keywords", {}).get("keywords", []) or ["họp"])
+        # Cổng "có phải yêu cầu nhắc": intent_keywords + CỤM (>= 2 chữ) từ khoá MẠNH của intents.json.
+        # Từ đơn trong intents ('zalo', 'tết', 'thuốc') thường là danh từ, không đủ để coi là yêu cầu nhắc.
+        gate_words = list(d.get("intent_keywords", []) or ["nhắc"])
+        try:
+            gate_words += [k for k in load_intents().strong_keywords if " " in k]
+        except (OSError, ValueError):
+            pass  # thiếu intents.json → chỉ dùng intent_keywords
+        self.intent_re = _phrase_regex(gate_words)
         self.bare_hour_pm = tuple(d.get("bare_hour_pm", {}).get("hours", [1, 9]))
-        self.bare_hour_pm_meeting = tuple(d.get("bare_hour_pm", {}).get("meeting_hours", [1, 6]))
 
         blockers = d.get("blockers", {})
-        endings = blockers.get("question_endings", [])
+        # Từ cuối câu (có thể kèm đại từ/tiểu từ phía sau: "họp không em", "xong chưa anh ạ")
+        trailing = blockers.get("trailing_particles", [])
+        trail_re = (
+            r"(?:\s+(?:" + "|".join(re.escape(w) for w in sorted(trailing, key=len, reverse=True)) + r"))*"
+            if trailing else ""
+        )
+        endings = blockers.get("question_endings", []) + blockers.get("statement_endings", [])
         self.question_end_re = (
-            re.compile(r"(?<!\w)(?:" + "|".join(re.escape(w) for w in sorted(endings, key=len, reverse=True)) + r")[\s.!…~]*$")
+            re.compile(r"(?<!\w)(?:" + "|".join(re.escape(w) for w in sorted(endings, key=len, reverse=True))
+                       + r")" + trail_re + r"[\s.!…~]*$")
             if endings else None
         )
-        block_phrases = blockers.get("question_phrases", []) + blockers.get("past_markers", []) + blockers.get("idioms", [])
+        block_phrases = (blockers.get("question_phrases", []) + blockers.get("past_markers", [])
+                         + blockers.get("idioms", []) + blockers.get("not_reminder", []))
         self.block_re = _phrase_regex(block_phrases) if block_phrases else None
 
 
@@ -129,6 +143,180 @@ def load_dictionary(path: str = DICTIONARY_PATH, force: bool = False) -> _Dictio
     if _DICT is None or force:
         _DICT = _Dictionary(path)
     return _DICT
+
+
+# =========================================================
+# INTENT (loại việc) — intents.json
+# =========================================================
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", s or "").lower()).strip()
+
+
+@dataclass
+class Intent:
+    id: str
+    label: str
+    emoji: str
+    priority: int
+    behavior: dict
+    score: float = 0.0
+    hits: list = field(default_factory=list)
+
+    @property
+    def alerts_before_minutes(self) -> list:
+        return list(self.behavior.get("alerts_before_minutes") or [])
+
+    @property
+    def alert_before_days(self) -> Optional[dict]:
+        return self.behavior.get("alert_before_days") or None
+
+    @property
+    def bare_hour_pm(self) -> Optional[tuple]:
+        rng = self.behavior.get("bare_hour_pm")
+        return tuple(rng) if rng else None
+
+    @property
+    def suggest_repeat(self) -> Optional[str]:
+        return self.behavior.get("suggest_repeat") or None
+
+    @property
+    def period_times(self) -> dict:
+        return dict(self.behavior.get("period_times") or {})
+
+    @property
+    def alerts_on_period(self) -> bool:
+        return bool(self.behavior.get("alerts_on_period"))
+
+    @property
+    def display(self) -> str:
+        return f"{self.emoji} {self.label}"
+
+
+class _Intents:
+    def __init__(self, path: str):
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        sc = d["_meta"]["scoring"]
+        self.weights = sc["weights"]
+        self.bonus = sc.get("phrase_bonus_per_extra_word", 0.5)
+        self.first_bonus = sc.get("first_match_bonus", 1)
+        self.purpose_factor = sc.get("purpose_factor", 0.5)
+        self.min_score = sc.get("min_score", 1)
+        abbr = {_norm_text(k): _norm_text(v) for k, v in (sc.get("abbreviations") or {}).items()}
+        self.abbr = abbr
+        self.abbr_re = _phrase_regex(abbr) if abbr else None
+        self.purpose_re = _phrase_regex([_norm_text(x) for x in sc.get("purpose_markers", [])]) \
+            if sc.get("purpose_markers") else None
+        self.fallback = d.get("fallback_intent", "khac")
+        self.defs = {it["id"]: it for it in d["intents"]}
+        self.order = [it["id"] for it in d["intents"]]
+
+        # (cụm, intent, điểm) — cụm dài trước để chiếm chỗ trước cụm ngắn
+        entries = {}
+        self.strong_keywords = []
+        for it in d["intents"]:
+            for kind in ("strong", "weak"):
+                for kw in it["keywords"].get(kind, []):
+                    p = _norm_text(kw)
+                    if not p or p in entries:
+                        continue
+                    val = self.weights[kind] * (1 + self.bonus * (len(p.split()) - 1))
+                    entries[p] = (it["id"], val)
+                    if kind == "strong":
+                        self.strong_keywords.append(p)
+        self.entries = entries
+        # Mỗi cụm 1 regex, cụm dài trước: cụm dài nhất trong CẢ CÂU chiếm chỗ trước
+        # ('đi đám cưới' → 'đám cưới', không phải 'đi đám' dù 'đi đám' đứng trước)
+        self.keyword_res = [
+            (re.compile(r"(?<!\w)" + re.escape(p) + r"(?!\w)"), p)
+            for p in sorted(entries, key=len, reverse=True)
+        ]
+        self.keyword_re = bool(entries)
+        self.exclude = {
+            it["id"]: _phrase_regex([_norm_text(x) for x in it.get("exclude", [])])
+            for it in d["intents"] if it.get("exclude")
+        }
+
+    def make(self, intent_id: str, score: float = 0.0, hits=None) -> Intent:
+        it = self.defs.get(intent_id) or self.defs[self.fallback]
+        return Intent(it["id"], it["label"], it.get("emoji", ""), it.get("priority", 0),
+                      dict(it.get("behavior") or {}), score, list(hits or []))
+
+    def expand(self, text: str) -> str:
+        """Chuẩn hoá + mở rộng viết tắt ('vs' → 'với', 'ctay' → 'chia tay') để dò từ khoá."""
+        t = _norm_text(text)
+        if self.abbr_re:
+            t = self.abbr_re.sub(lambda m: self.abbr[m.group(1)], t)
+        return t
+
+    def classify(self, text: str) -> Intent:
+        t = self.expand(text)
+        if not t or not self.keyword_re:
+            return self.make(self.fallback)
+        pm = self.purpose_re.search(t) if self.purpose_re else None
+        purpose_at = pm.start() if pm else len(t) + 1
+        score, tail, hits, seen = {}, {}, {}, set()
+        taken = [False] * len(t)
+        first = None  # (vị trí, intent) của từ khoá khớp sớm nhất — thường là động từ chính
+        for rx, p in self.keyword_res:
+            if p not in t:
+                continue
+            for m in rx.finditer(t):
+                if any(taken[m.start():m.end()]):
+                    continue
+                for j in range(m.start(), m.end()):
+                    taken[j] = True
+                iid, val = self.entries[p]
+                if first is None or m.start() < first[0]:
+                    first = (m.start(), iid)
+                if (iid, p) in seen:
+                    continue
+                seen.add((iid, p))
+                hits.setdefault(iid, []).append(p)
+                if m.start() > purpose_at:
+                    tail[iid] = max(tail.get(iid, 0), val * self.purpose_factor)
+                else:
+                    score[iid] = score.get(iid, 0) + val
+        for iid, v in tail.items():
+            score[iid] = score.get(iid, 0) + v
+        if first:
+            score[first[1]] = score.get(first[1], 0) + self.first_bonus
+        for iid, rx in self.exclude.items():
+            if iid in score and rx.search(t):
+                score.pop(iid)
+        cands = [(s, self.defs[i].get("priority", 0), i) for i, s in score.items() if s >= self.min_score]
+        if not cands:
+            return self.make(self.fallback)
+        cands.sort(reverse=True)
+        best = cands[0][2]
+        return self.make(best, score[best], hits.get(best))
+
+
+_INTENTS: Optional[_Intents] = None
+
+
+def load_intents(path: str = INTENTS_PATH, force: bool = False) -> _Intents:
+    global _INTENTS
+    if _INTENTS is None or force:
+        _INTENTS = _Intents(path)
+    return _INTENTS
+
+
+def classify_intent(text: str) -> Intent:
+    """Phân loại loại việc (họp, mời ăn, deadline...) theo từ điển intents.json, có tính điểm."""
+    return load_intents().classify(text)
+
+
+def get_intent(intent_id: Optional[str]) -> Intent:
+    """Intent theo id (vd id LLM trả về). id lạ/None → intent fallback ('khac')."""
+    return load_intents().make(intent_id or "")
+
+
+def intent_catalog() -> list:
+    """[(id, label, câu ví dụ)] — dùng để đưa danh sách intent vào prompt LLM."""
+    ints = load_intents()
+    return [(i, ints.defs[i]["label"], ints.defs[i].get("examples") or ints.defs[i]["keywords"].get("strong", [])[:6])
+            for i in ints.order]
 
 
 # =========================================================
@@ -569,10 +757,10 @@ def contains_time_expression(text: str, now: Optional[datetime] = None) -> bool:
 
 
 def is_meeting_text(text: str) -> bool:
-    """True nếu câu có từ khoá cuộc họp (meeting_keywords trong dictionary.json)."""
+    """True nếu câu được phân loại là cuộc họp (intent 'hop' trong intents.json)."""
     if not text:
         return False
-    return bool(load_dictionary().meeting_re.search(unicodedata.normalize("NFKC", text).lower()))
+    return classify_intent(text).id == "hop"
 
 
 def has_explicit_clock_time(text: str, now: Optional[datetime] = None) -> bool:
@@ -588,7 +776,7 @@ def _bare_hour_pm(a: _Analysis, dct: _Dictionary, remind_time: datetime, repeat_
                   text: str = "") -> datetime:
     """Giờ trần 1 chữ số không kèm buổi ('5h', '5h30'): nếu giờ sáng hôm nay đã qua mà giờ chiều (+12)
     chưa tới → nhắc giờ chiều hôm nay. Không áp dụng khi có buổi, có ngày/thứ khác hôm nay, lặp, âm lịch.
-    Câu là cuộc họp → chỉ dời với khoảng giờ hẹp hơn (meeting_hours, mặc định 1–6h): họp 7h/8h/9h
+    Khoảng giờ lấy theo intent (behavior.bare_hour_pm trong intents.json; họp 1–6h): họp 7h/8h/9h
     gửi lúc chiều vẫn là sáng hôm sau, không đặt họp tối muộn."""
     if (repeat_type or "none") != "none" or a.is_lunar or a.period:
         return remind_time
@@ -600,8 +788,8 @@ def _bare_hour_pm(a: _Analysis, dct: _Dictionary, remind_time: datetime, repeat_
     if len(tokens) != 1:
         return remind_time
     h_str, mi_str = tokens.pop()
-    is_meeting = bool(text) and bool(dct.meeting_re.search(unicodedata.normalize("NFKC", text).lower()))
-    lo, hi = dct.bare_hour_pm_meeting if is_meeting else dct.bare_hour_pm
+    # Khoảng giờ theo intent (họp 1–6h, mời ăn 1–9h...), không có thì dùng mặc định dictionary.json
+    lo, hi = (classify_intent(text).bare_hour_pm if text else None) or dct.bare_hour_pm
     if len(h_str) != 1 or not lo <= int(h_str) <= hi:
         return remind_time  # '05h', '10h', '11h' giữ nguyên
     today = now.date()
@@ -616,6 +804,33 @@ def _bare_hour_pm(a: _Analysis, dct: _Dictionary, remind_time: datetime, repeat_
     if am <= now < pm:
         return pm + offset
     return remind_time
+
+
+def apply_intent_period_time(text: str, intent: "Intent", remind_time: datetime, repeat_type="none",
+                             now: Optional[datetime] = None):
+    """Intent có period_times (vd mời ăn: trưa 12:00, tối 18:00) và người dùng chỉ ghi buổi, không ghi giờ.
+    Trả về (giờ nhắc mới, khớp_buổi):
+    - giờ nhắc chỉ đổi khi đang đúng giờ mặc định của buổi (dictionary.json → periods) và giờ mới còn ở tương lai;
+    - khớp_buổi = True khi câu có buổi nằm trong period_times (dùng cho alerts_on_period)."""
+    rules = intent.period_times if intent else {}
+    if not rules or not text or not remind_time or (repeat_type or "none") != "none":
+        return remind_time, False
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    a = _analyze(text, now, load_dictionary())
+    if a.is_lunar or a.times or a.rels or not a.period:
+        return remind_time, False
+    words = {_norm_text(w) for w in a.period.get("words", [])}
+    for key, hhmm in rules.items():
+        if _norm_text(key) not in words:
+            continue
+        h, mi = map(int, hhmm.split(":"))
+        dh, dm = map(int, a.period["default_time"].split(":"))
+        if (remind_time.hour, remind_time.minute) == (dh, dm):
+            cand = remind_time.replace(hour=h, minute=mi, second=0, microsecond=0)
+            if cand > now:
+                return cand, True
+        return remind_time, True
+    return remind_time, False
 
 
 def shift_bare_hour_to_pm(text: str, remind_time: datetime, repeat_type="none",

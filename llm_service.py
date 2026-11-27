@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 import httpx
 from lunarcalendar import solar_to_lunar
+from dictionary_parser import intent_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,20 @@ def _get_timeout() -> float:
         return DEFAULT_TIMEOUT
 
 
+def _intent_prompt_lines() -> str:
+    """Danh sách intent đọc từ intents.json (một nguồn duy nhất cho Dictionary và LLM)."""
+    try:
+        catalog = intent_catalog()
+    except Exception:
+        logger.exception("intent_catalog_failed")
+        return '   - "khac": Khác'
+    lines = []
+    for iid, label, examples in catalog:
+        ex = " (ví dụ: " + "; ".join(f'"{e}"' for e in examples) + ")" if examples else ""
+        lines.append(f'   - "{iid}": {label}{ex}')
+    return "\n".join(lines)
+
+
 def build_system_instruction(current_dt: datetime) -> str:
     """Tạo prompt hệ thống kèm ngữ cảnh thời gian hiện tại."""
     wd_str = WEEKDAY_VI.get(current_dt.weekday(), "")
@@ -106,6 +121,7 @@ def build_system_instruction(current_dt: datetime) -> str:
     except Exception:
         lunar_str = "không xác định"
 
+    intent_lines = _intent_prompt_lines()
     instruction = f"""Bạn là trợ lý AI thông minh chuyên phân tích và chuẩn hóa tin nhắn nhắc lịch (Reminder) cho Telegram Bot tiếng Việt.
 
 THỜI GIAN HIỆN TẠI HỆ THỐNG:
@@ -131,12 +147,12 @@ NHIỆM VỤ CỦA BẠN:
          - Nếu ngày DD/MM trong năm nay {current_year} chưa tới (>= ngày hiện tại): đặt mốc là DD/MM/{current_year}.
          - Nếu ngày DD/MM trong năm nay {current_year} đã trôi qua (< ngày hiện tại): đặt mốc là DD/MM/{current_year + 1}.
        * "standard_syntax": "Sinh nhật <Họ và tên> lúc 09:00 ngày <DD/MM/YYYY> hàng năm"
-       * "is_meeting": false
+       * "is_meeting": false, "intent": "su_kien"
 
      + Với danh sách lịch họp / nhiều cuộc họp trong tin nhắn (ví dụ lịch tuần, thông báo các cuộc họp trong ngày/tuần):
        * Tách riêng từng cuộc họp thành từng phần tử độc lập trong mảng "reminders".
        * "clean_message": Tóm tắt nội dung cuộc họp, kèm địa điểm hoặc hình thức họp nếu có (Ví dụ: "Họp giao ban tuần tại Phòng họp 1", "Họp dự án AI qua Zoom").
-       * "is_meeting": true cho TẤT CẢ các mục cuộc họp này.
+       * "is_meeting": true và "intent": "hop" cho TẤT CẢ các mục cuộc họp này.
        * "has_explicit_time": true nếu có giờ họp cụ thể (ví dụ 8h30, 14h...). Nếu không nói giờ, mặc định 09:00 sáng.
        * "repeat_type": "none" nếu là cuộc họp cụ thể theo ngày; hoặc "weekly" nếu là lịch lặp hàng tuần (ví dụ "thứ 2 hàng tuần").
        * "standard_syntax": "<Nội dung họp> lúc <HH:MM> ngày <DD/MM/YYYY>" (hoặc "<Nội dung họp> lúc <HH:MM> T2 hàng tuần" nếu lặp).
@@ -148,9 +164,12 @@ NHIỆM VỤ CỦA BẠN:
    - Lọc bỏ các từ râu ria, xưng hô không cần thiết như: "Kính nhờ các anh", "nhớ nhắc anh/em/tao", "ê bot", "giúp tao", "nhé", "nha".
    - Nếu tin nhắn có "Deadline : DD/MM/YYYY" hoặc "Hạn chót" hoặc "Để đầu tháng 10... họp": tóm tắt hành động cần làm. Viết hoa chữ cái đầu.
 
-4. Nhận diện cuộc họp (is_meeting):
-   - "is_meeting": true chỉ khi nội dung là một cuộc họp/lịch gặp cần tham dự, ví dụ có "họp", "meeting", "lịch gặp đối tác".
-   - Deadline, công việc cá nhân, sinh nhật, nhắc nộp báo cáo hoặc lời chào không phải cuộc họp thì "is_meeting": false.
+4. Phân loại loại việc ("intent") — CHỈ chọn 1 id trong danh sách sau:
+{intent_lines}
+   - Chọn theo việc CHÍNH cần làm (động từ chính), không theo chủ đề phụ: "họp với khách để chốt thanh toán" → "hop";
+     "hoàn thành slide thuyết trình" → "deadline"; "liên hoan mừng sinh nhật sếp" → "moi_an".
+   - Không khớp loại nào → "khac".
+   - "is_meeting": true khi và chỉ khi "intent" là "hop" (giữ để tương thích).
 
 5. QUY TẮC SUY LUẬN THỜI GIAN & FALLBACK 9H SÁNG / 16H CHIỀU:
    a. Người dùng có nói giờ cụ thể (ví dụ 10h, 8h30 sáng, 4 rưỡi chiều):
@@ -165,6 +184,8 @@ NHIỆM VỤ CỦA BẠN:
       - MẶC ĐỊNH LUÔN LÀ 09:00 SÁNG của ngày được nhắc tới (kể cả deadline, báo cáo, nộp hồ sơ, email, họp, sinh nhật, ngày mai, ngày tương lai).
         KHÔNG tự chọn 16:00 chỉ vì nội dung là deadline/báo cáo.
       - Chỉ khi người dùng nói rõ buổi (sáng/trưa/chiều/tối/đêm, "cuối ngày", "cuối giờ chiều") mới dùng giờ của buổi đó (ví dụ chiều → 16:00, tối → 20:00).
+        Riêng MỜI ĂN / TIỆC ("intent": "moi_an") chỉ ghi buổi: trưa → 12:00, tối → 18:00 (không phải 20:00),
+        và vẫn đặt "has_explicit_time": true để bot nhắc trước 45 và 30 phút.
       - "Đầu tháng X/YYYY": tính là ngày 01 của tháng X/YYYY lúc 09:00 sáng.
       - Nếu là việc trong ngày hôm nay:
         + Nếu hiện tại trước 09:00: chọn 09:00 hôm nay.
@@ -194,6 +215,7 @@ Bắt buộc trả về đúng định dạng JSON thuần tuý (JSON object), k
       "clean_message": "Nội dung việc cần làm",
       "standard_syntax": "Chuỗi cú pháp chuẩn để nạp vào bot",
       "has_explicit_time": true hoặc false,
+      "intent": "một id trong danh sách intent ở mục 4",
       "is_meeting": true hoặc false,
       "suggested_slot": "morning_9h" | "afternoon_16h" | "exact" | "other",
       "repeat_type": "none" | "daily" | "weekly" | "monthly" | "yearly" | "weekday" | "weekend",
@@ -232,6 +254,7 @@ def _normalize_llm_result(data: Dict[str, Any]) -> Dict[str, Any]:
                 "standard_syntax": data.get("standard_syntax") or "",
                 "has_explicit_time": bool(data.get("has_explicit_time")),
                 "is_meeting": bool(data.get("is_meeting")),
+                "intent": data.get("intent"),
                 "suggested_slot": data.get("suggested_slot", "other"),
                 "repeat_type": data.get("repeat_type", "none"),
                 "is_lunar": bool(data.get("is_lunar")),
@@ -247,6 +270,7 @@ def _normalize_llm_result(data: Dict[str, Any]) -> Dict[str, Any]:
                         "standard_syntax": item.get("standard_syntax") or "",
                         "has_explicit_time": bool(item.get("has_explicit_time")),
                         "is_meeting": bool(item.get("is_meeting")),
+                        "intent": item.get("intent"),
                         "suggested_slot": item.get("suggested_slot", "other"),
                         "repeat_type": item.get("repeat_type", "none"),
                         "is_lunar": bool(item.get("is_lunar")),
@@ -256,7 +280,7 @@ def _normalize_llm_result(data: Dict[str, Any]) -> Dict[str, Any]:
         # Đảm bảo root có dữ liệu của item đầu tiên (để tương thích ngược)
         if data["reminders"]:
             first = data["reminders"][0]
-            for field in ["clean_message", "standard_syntax", "has_explicit_time", "is_meeting", "suggested_slot", "repeat_type", "is_lunar"]:
+            for field in ["clean_message", "standard_syntax", "has_explicit_time", "is_meeting", "intent", "suggested_slot", "repeat_type", "is_lunar"]:
                 if field not in data or data[field] is None:
                     data[field] = first.get(field)
 

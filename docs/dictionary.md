@@ -46,7 +46,8 @@ Các hàm phụ dùng ở `telegrambot.py`:
 | Hàm | Dùng để |
 |---|---|
 | `contains_time_expression(text)` | Kiểm tra nội dung Rule trả về còn sót mốc thời gian không |
-| `is_meeting_text(text)` | Câu có từ khoá họp không |
+| `is_meeting_text(text)` | Câu được phân loại là họp không (intent `hop`) |
+| `classify_intent(text)` / `get_intent(id)` | Phân loại loại việc theo `intents.json` (xem [intents.md](intents.md)) |
 | `has_explicit_clock_time(text)` | Người dùng có ghi giờ cụ thể (8h, 14:30, 15 phút nữa) không |
 | `shift_bare_hour_to_pm(text, remind_time, repeat_type)` | Áp quy tắc giờ trần 1 chữ số cho kết quả của Rule |
 | `standard_syntax_for(msg, dt, rtype)` | Dựng cú pháp chuẩn |
@@ -84,10 +85,9 @@ Theo `_meta.pipeline` trong file JSON:
 | `computed_phrases` | Cụm cần tính toán (cuối tháng, ngày kia...) | Hiếm |
 | `periods` | Buổi trong ngày: `words`, `default_time`, `hour_shift` | Đổi giờ mặc định của buổi |
 | `default_time_by_keyword` | Giờ theo từ khoá (đang tắt) | Hiện không dùng |
-| `bare_hour_pm` | Khoảng giờ được dời sang chiều: `hours`, `meeting_hours` | Đổi phạm vi giờ trần |
-| `meeting_keywords` | Từ khoá cuộc họp | Thêm loại họp mới |
-| `intent_keywords` | Từ khoá cho biết câu là việc cần nhắc (gửi, nộp, gọi, email, họp...) | Câu đúng là nhắc lịch nhưng bị rơi xuống LLM |
-| `blockers` | `question_endings`, `question_phrases`, `past_markers`, `idioms` | Câu không phải nhắc lịch nhưng bị Dictionary bắt |
+| `bare_hour_pm` | Khoảng giờ mặc định được dời sang chiều (`hours`); intent có khoảng riêng trong `intents.json` | Đổi phạm vi giờ trần |
+| `intent_keywords` | Từ khoá cho biết câu là việc cần nhắc (gửi, nộp, gọi, email, họp...). Cổng còn tự lấy thêm mọi **cụm ≥ 2 chữ** trong từ khoá mạnh của `intents.json` | Câu đúng là nhắc lịch nhưng bị rơi xuống LLM |
+| `blockers` | `question_endings`, `statement_endings`, `trailing_particles`, `question_phrases`, `past_markers`, `idioms`, `not_reminder` | Câu không phải nhắc lịch nhưng bị Dictionary bắt |
 | `ambiguous` | Cụm mơ hồ, để LLM quyết | Hiếm |
 
 ### Điều kiện để Dictionary nhận câu
@@ -95,14 +95,19 @@ Theo `_meta.pipeline` trong file JSON:
 Dictionary trả `None` (xuống LLM) khi:
 
 - không có mốc thời gian nào (giờ, ngày, thứ, hôm nay/mai, N phút nữa, lặp);
-- không có từ khoá trong `intent_keywords`;
-- dính `blockers`: câu hỏi ("mai họp không?", "mấy giờ"), chuyện đã qua, thành ngữ;
+- không có từ khoá trong `intent_keywords` hoặc cụm từ khoá mạnh của `intents.json`;
+- dính `blockers`:
+  - câu hỏi, kể cả có đại từ phía sau: "mai họp không em", "mấy giờ";
+  - câu kể kết thúc bằng "rồi", "quá", "ghê": "họp xong lúc 5h rồi";
+  - chuyện đã qua ("hôm qua", "đã"), thành ngữ ("mai mốt");
+  - `not_reminder`: từ chối ("không đi được", "bận"), cảm thán ("kinh khủng", "mệt quá"), chuyện thời tiết/giao thông, cảm ơn, lời chúc ("vui vẻ");
 - có ≥ 2 giờ khác nhau, hoặc trộn nhiều ngày với nhiều thứ;
 - câu dài > 300 ký tự hoặc > 3 dòng;
 - còn sót cụm thời gian chưa hiểu được, hoặc nội dung còn lại rỗng.
 
 ### Lưu ý khi thêm từ khoá
 
+- Từ đơn trong `intents.json` **không** mở cổng (vd "zalo", "tết", "thuốc" thường là danh từ); muốn từ đơn mở cổng thì thêm vào `intent_keywords`.
 - **Không thêm từ đơn quá chung** vào `intent_keywords`. Đã cố tình **không** thêm `báo`, `mail`, `zalo` vì gây nhận nhầm: "hôm nay mail nhiều quá", "zalo mai bị lỗi". Dùng cụm cụ thể: `gửi mail`, `check mail`, `báo cáo`, `báo giá`, `thông báo`.
 - "Mai" vừa là "ngày mai" vừa là tên người. `_is_name_mai()` coi là tên khi đứng sau anh/chị/em/bạn/cô..., khi đứng trước "ơi" ("Mai ơi gửi file"), hoặc khi viết hoa "Mai" ở giữa câu ("họp với chị Mai", "gửi Mai file"). "Mai" viết hoa ở đầu câu vẫn là ngày mai.
 - Regex dùng cú pháp Python `re`, nhớ escape `\\` trong JSON.
@@ -126,17 +131,17 @@ Dictionary trả `None` (xuống LLM) khi:
 Câu chỉ có **một** giờ, ghi **1 chữ số** trong khoảng cấu hình, không kèm buổi, không chỉ ngày nào khác hôm nay, không lặp, không âm lịch. Nếu giờ sáng hôm nay đã qua mà giờ +12 chưa tới thì lấy giờ chiều hôm nay.
 
 ```json
-"bare_hour_pm": { "hours": [1, 9], "meeting_hours": [1, 6] }
+"bare_hour_pm": { "hours": [1, 9] }
 ```
 
-- `hours`: tin thường, "9h gọi mẹ" gửi lúc 14h → 21:00.
-- `meeting_hours`: câu có từ khoá họp, "8h họp giao ban" gửi lúc 14h → 08:00 sáng mai, không đặt họp tối muộn.
+- `hours`: mặc định, "9h gọi mẹ" gửi lúc 14h → 21:00.
+- Intent có `behavior.bare_hour_pm` trong `intents.json` dùng khoảng riêng: họp `[1, 6]` ("8h họp giao ban" gửi lúc 14h → 08:00 sáng mai, không đặt họp tối muộn), mời ăn `[1, 9]` ("7h ăn tối" → 19:00).
 - Giữ nguyên: "5h mai", "5h sáng", "05h", "10h", "5h thứ 6", "5h hàng ngày".
 - Nếu Rule đã lệch giờ (cú pháp giờ đứng đầu trừ 15 phút), độ lệch được giữ khi dời giờ.
 
-### Cuộc họp (`meeting_keywords`)
+### Nhắc thêm theo loại việc
 
-Có từ khoá họp, có giờ cụ thể, không lặp, không âm lịch → `telegrambot.py` tạo thêm nhắc trước 15 phút và trước 5 phút, bỏ qua mốc nào đã ở quá khứ. "họp mai" (không ghi giờ) chỉ tạo 1 lịch 09:00.
+`meeting_keywords` đã được thay bằng intent `hop` trong `intents.json`. Nhắc trước 15/5 phút (họp), 45/30 phút (mời ăn), 1 ngày (hạn chót, thanh toán, sự kiện) được mô tả ở [intents.md](intents.md).
 
 ---
 
@@ -150,6 +155,7 @@ Có từ khoá họp, có giờ cụ thể, không lặp, không âm lịch → 
    python test_dictionary_parser.py
    python test_parse_routing.py
    python test_llm_flow.py
+   python test_intents.py
    ```
 5. Commit, push, trên server `git pull && ./install.sh`.
 6. Sau khi chạy thật, xem log `dictionary_rule_mismatch` / `dictionary_syntax_rule_failed`.

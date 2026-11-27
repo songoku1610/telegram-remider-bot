@@ -15,8 +15,8 @@ from weatherAPI import format_tomorrow_7am_forecast, format_tomorrow_day_forecas
 from lunarcalendar import solar_to_lunar, lunar_to_solar
 from llm_service import parse_with_gemini
 from dictionary_parser import (
-    parse_with_dictionary, contains_time_expression, is_meeting_text, has_explicit_clock_time,
-    shift_bare_hour_to_pm,
+    parse_with_dictionary, contains_time_expression, has_explicit_clock_time,
+    shift_bare_hour_to_pm, classify_intent, get_intent, load_intents, apply_intent_period_time,
 )
 
 
@@ -57,13 +57,14 @@ def init():
 
 
 def migrate():
-    """Tự động thêm cột lunar nếu chưa có, tương thích MySQL không hỗ trợ IF NOT EXISTS."""
+    """Tự động thêm cột lunar / intent nếu chưa có, tương thích MySQL không hỗ trợ IF NOT EXISTS."""
     migrations = [
         ("is_lunar", "BOOLEAN DEFAULT FALSE"),
         ("lunar_day", "TINYINT UNSIGNED DEFAULT NULL"),
         ("lunar_month", "TINYINT UNSIGNED DEFAULT NULL"),
         ("lunar_year", "SMALLINT UNSIGNED DEFAULT NULL"),
         ("lunar_leap", "BOOLEAN DEFAULT FALSE"),
+        ("intent", "VARCHAR(20) DEFAULT NULL"),
     ]
     c = db.cursor()
     try:
@@ -190,44 +191,117 @@ def format_repeat_type(repeat_type):
     return decoded if decoded else repeat_type
 
 
-MEETING_ALERT_MINUTES = (15, 5)
+# =========================
+# INTENT: nhắc thêm theo loại việc (intents.json → behavior)
+# =========================
+def build_intent_reminders(message, remind_time, repeat_type, intent, minute_alerts=True, now=None):
+    """Lịch đúng giờ + các lịch nhắc thêm theo hành vi của intent:
+    - alerts_before_minutes (họp 15/5 phút, mời ăn 45/30 phút): chỉ khi minute_alerts=True
+      (người dùng ghi giờ cụ thể). Mốc đã trôi qua thì bỏ, trừ lịch lặp.
+    - alert_before_days (deadline, thanh toán, sự kiện): nhắc trước N ngày khi lịch không lặp
+      và còn hơn only_if_lead_hours_over giờ nữa mới tới.
+    Trả về [(message, remind_at, repeat_type)], phần tử đầu là lịch chính."""
+    now = now or datetime.now()
+    rtype = repeat_type or "none"
+    reminders = [(message, remind_time, repeat_type)]
+    if intent is None:
+        return reminders
+    if minute_alerts:
+        for minutes in intent.alerts_before_minutes:
+            alert_at = remind_time - timedelta(minutes=minutes)
+            if rtype != "none" or alert_at > now:
+                reminders.append((f"Nhắc trước {minutes} phút: {message}", alert_at, repeat_type))
+    day_rule = intent.alert_before_days
+    if day_rule and rtype == "none":
+        days = int(day_rule.get("days", 1))
+        lead_hours = float(day_rule.get("only_if_lead_hours_over", 24))
+        if remind_time - now > timedelta(hours=lead_hours):
+            reminders.append((f"Nhắc trước {days} ngày: {message}", remind_time - timedelta(days=days), repeat_type))
+    return reminders
 
 
 def build_meeting_reminders(message, remind_time, repeat_type, now=None):
-    """Cuộc họp: lịch đúng giờ + nhắc trước 15 phút + nhắc trước 5 phút.
-    Mốc nhắc trước đã trôi qua (họp sắp diễn ra) thì bỏ, chỉ giữ các mốc còn ở tương lai."""
-    now = now or datetime.now()
-    reminders = [(message, remind_time, repeat_type)]
-    for minutes in MEETING_ALERT_MINUTES:
-        alert_at = remind_time - timedelta(minutes=minutes)
-        if repeat_type != "none" or alert_at > now:
-            reminders.append((f"Nhắc trước {minutes} phút: {message}", alert_at, repeat_type))
-    return reminders
+    """Cuộc họp: lịch đúng giờ + nhắc trước theo intent 'hop' (15 và 5 phút)."""
+    return build_intent_reminders(message, remind_time, repeat_type, get_intent("hop"), True, now)
 
 
 # Tên cũ, giữ để tương thích
 build_llm_meeting_reminders = build_meeting_reminders
 
 
-def is_meeting_reminder(text, repeat_type, is_lunar=False):
-    """Rule/Dictionary: coi là cuộc họp khi có từ khoá họp + giờ cụ thể + không lặp + dương lịch.
-    Giờ tự đặt (không ghi giờ) không phải giờ họp thật nên không tạo nhắc trước."""
+def minute_alerts_apply(text, repeat_type, is_lunar=False):
+    """Rule/Dictionary: nhắc trước theo phút chỉ khi có giờ cụ thể + không lặp + dương lịch.
+    Giờ tự đặt (không ghi giờ) không phải giờ hẹn thật nên không tạo nhắc trước."""
     if is_lunar or (repeat_type or "none") != "none":
         return False
     try:
-        return is_meeting_text(text) and has_explicit_clock_time(text)
+        return has_explicit_clock_time(text)
     except Exception:
-        logger.exception("meeting_detect_failed")
+        logger.exception("explicit_time_detect_failed")
         return False
 
 
-def format_meeting_alert_line(reminders):
+def detect_intent(text):
+    try:
+        return classify_intent(text)
+    except Exception:
+        logger.exception("intent_classify_failed")
+        return get_intent(None)
+
+
+def intent_from_llm(item, fallback_text):
+    """Intent LLM trả về (nếu thuộc danh sách), không có thì tự phân loại; is_meeting cũ → 'hop'."""
+    item = item or {}
+    iid = item.get("intent")
+    try:
+        if iid and iid in load_intents().defs:
+            return get_intent(iid)
+    except Exception:
+        logger.exception("intent_load_failed")
+    intent = detect_intent(fallback_text)
+    if item.get("is_meeting") and intent.id != "hop":
+        intent = get_intent("hop")
+    return intent
+
+
+def format_alert_line(reminders):
     """Dòng xác nhận các mốc nhắc thêm thực sự được tạo."""
     alerts = [m for m, _, _ in reminders[1:]]
     if not alerts:
         return ""
     parts = [a.split(":", 1)[0].replace("Nhắc ", "") for a in alerts]
     return "\n🔔 <b>Nhắc thêm:</b> " + ", ".join(parts) + " và đúng giờ"
+
+
+format_meeting_alert_line = format_alert_line
+
+_REPEAT_HINT = {"monthly": "hàng tháng", "yearly": "hàng năm", "weekly": "hàng tuần", "daily": "hàng ngày"}
+
+
+def format_intent_lines(intent, repeat_type):
+    """Dòng 'Loại' + gợi ý lặp (nếu intent có suggest_repeat và người dùng chưa đặt lặp)."""
+    try:
+        if intent is None or intent.id == load_intents().fallback:
+            return ""
+    except Exception:
+        return ""
+    out = f"\n🗂 <b>Loại:</b> {intent.display}"
+    hint = _REPEAT_HINT.get(intent.suggest_repeat or "")
+    if hint and (repeat_type or "none") == "none":
+        out += f"\n💡 <i>Muốn nhắc lặp lại, thêm \"{hint}\" vào tin nhắn.</i>"
+    return out
+
+
+def intent_badge(intent_id):
+    """' · 👥 Họp' cho danh sách lịch; rỗng nếu không có intent hoặc 'khac'."""
+    if not intent_id:
+        return ""
+    try:
+        if intent_id == load_intents().fallback:
+            return ""
+        return f" · {get_intent(intent_id).display}"
+    except Exception:
+        return ""
 
 
 # Nguồn đã nhận diện thời gian, hiển thị trong tin nhắn xác nhận
@@ -283,17 +357,21 @@ def dictionary_items_via_rule(dict_res):
 
 
 class _InsertedList(list):
-    """List lịch chính đã chèn, kèm số lịch nhắc trước (cuộc họp) trong .alerts."""
+    """List lịch chính đã chèn, kèm số lịch nhắc thêm (.alerts) và dòng mô tả (.alert_line)."""
     alerts = 0
+    alert_line = ""
+    intent = None
 
 
 def _insert_many_reminders(user_id, items, fw_prefix="", source_text=None):
     """Chèn nhiều lịch dương lịch, bỏ qua lịch trùng. Trả về (inserted, skipped).
-    source_text: tin gốc, dùng để nhận diện cuộc họp → mỗi lịch có thêm nhắc trước 15/5 phút.
-    inserted chỉ chứa lịch chính; số nhắc trước nằm trong thuộc tính .alerts của list."""
+    source_text: tin gốc, dùng để phân loại intent → mỗi lịch có thêm nhắc trước theo intent.
+    inserted chỉ chứa lịch chính; số nhắc thêm nằm trong thuộc tính .alerts của list."""
     inserted = []
     skipped = 0
     alerts = 0
+    alert_line = ""
+    intent = detect_intent(source_text) if source_text else None
     for (m_msg, m_time, m_rtype) in items:
         m_msg = fw_prefix + m_msg
         cursor.execute(
@@ -303,22 +381,24 @@ def _insert_many_reminders(user_id, items, fw_prefix="", source_text=None):
         if cursor.fetchone():
             skipped += 1
             continue
-        to_add = (
-            build_meeting_reminders(m_msg, m_time, m_rtype)
-            if source_text and is_meeting_reminder(source_text, m_rtype)
-            else [(m_msg, m_time, m_rtype)]
+        to_add = build_intent_reminders(
+            m_msg, m_time, m_rtype, intent,
+            minute_alerts=bool(source_text) and minute_alerts_apply(source_text, m_rtype),
         )
         for r_msg, r_time, r_rtype in to_add:
             cursor.execute(
-                "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (user_id, r_msg, r_time, r_rtype, False, None, None, None, False),
+                "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap, intent)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, r_msg, r_time, r_rtype, False, None, None, None, False, intent.id if intent else None),
             )
         alerts += len(to_add) - 1
+        alert_line = alert_line or format_alert_line(to_add)
         inserted.append((m_msg, m_time, m_rtype))
     db.commit()
     inserted = _InsertedList(inserted)
     inserted.alerts = alerts
+    inserted.alert_line = alert_line
+    inserted.intent = intent
     return inserted, skipped
 
 
@@ -328,8 +408,13 @@ def format_many_reminders_reply(inserted, source):
         wd = weekday_vi(m_time)
         rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
         lines.append(f"• {wd}, {m_time.strftime('%d-%m-%Y %H:%M')} — {html.escape(m_msg)} ({rt_str})")
-    if getattr(inserted, "alerts", 0):
-        lines.append("🔔 <b>Nhắc thêm:</b> trước 15 phút, trước 5 phút và đúng giờ cho mỗi cuộc họp")
+    intent = getattr(inserted, "intent", None)
+    if intent is not None:
+        extra = format_intent_lines(intent, inserted[0][2] if inserted else "none")
+        if extra:
+            lines.append(extra.lstrip("\n"))
+    if getattr(inserted, "alerts", 0) and getattr(inserted, "alert_line", ""):
+        lines.append(inserted.alert_line.lstrip("\n") + " (mỗi lịch)")
     lines.append(format_parse_source(source))
     return "\n".join(lines)
 
@@ -593,7 +678,7 @@ def format_reminder_listing(rows, title):
                 lunar_label = f"tháng {reminder['lunar_month']}" + (" nhuận" if reminder.get("lunar_leap") else "")
                 lunar_line = f"\n🌙 Âm lịch: ngày {reminder['lunar_day']} {lunar_label} năm {reminder['lunar_year']} {reminder['remind_at'].strftime('%H:%M')}"
             wd = weekday_vi(reminder["remind_at"])
-            msg += f"""ID: {reminder['id']}
+            msg += f"""ID: {reminder['id']}{intent_badge(reminder.get('intent'))}
 ⏰ {wd}, {reminder['remind_at'].strftime('%d-%m-%Y %H:%M')}{lunar_line}
 📌 {reminder['message']}
 🔁 {format_repeat_type(reminder['repeat_type'])}
@@ -602,7 +687,7 @@ def format_reminder_listing(rows, title):
             continue
 
         first_reminder = reminders[0]
-        msg += f"📌 {first_reminder['message']}\n🔁 {format_repeat_type(first_reminder['repeat_type'])}\n"
+        msg += f"📌 {first_reminder['message']}{intent_badge(first_reminder.get('intent'))}\n🔁 {format_repeat_type(first_reminder['repeat_type'])}\n"
         for reminder in reminders:
             wd = weekday_vi(reminder["remind_at"])
             msg += f"⏰ {wd}, {reminder['remind_at'].strftime('%d-%m-%Y %H:%M')} — ID: {reminder['id']}\n"
@@ -1483,7 +1568,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lunar_leap = False
     _fallback_hint = False
     _llm_auto_slot_note = None
-    _llm_meeting = False
+    _llm_intent = None
+    _llm_explicit_time = False
     _llm_parsed = False
     _dict_auto_slot_note = None
     parse_source = None
@@ -1621,11 +1707,10 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         m_lunar, m_ld, m_lm, m_ly, m_leap = False, None, None, None, False
 
                     m_msg = fw_prefix + m_msg
-                    is_meeting_item = bool(item.get("is_meeting"))
-                    to_add = (
-                        build_meeting_reminders(m_msg, m_time, m_rtype)
-                        if is_meeting_item
-                        else [(m_msg, m_time, m_rtype)]
+                    item_intent = intent_from_llm(item, item.get("clean_message") or std_text)
+                    to_add = build_intent_reminders(
+                        m_msg, m_time, m_rtype, item_intent,
+                        minute_alerts=bool(item.get("has_explicit_time") or item.get("is_meeting")) and not m_lunar,
                     )
 
                     # Kiểm tra xem lịch chính đã tồn tại chưa
@@ -1645,12 +1730,15 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if cursor.fetchone():
                             continue
 
+                        is_main = reminder_message == m_msg
                         cursor.execute(
-                            "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
-                            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                            (user_id, reminder_message, reminder_at, reminder_repeat_type, m_lunar, m_ld, m_lm, m_ly, m_leap),
+                            "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap, intent)"
+                            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (user_id, reminder_message, reminder_at, reminder_repeat_type,
+                             m_lunar if is_main else False, m_ld if is_main else None, m_lm if is_main else None,
+                             m_ly if is_main else None, m_leap if is_main else False, item_intent.id),
                         )
-                    inserted.append((m_msg, m_time, m_rtype, is_meeting_item))
+                    inserted.append((m_msg, m_time, m_rtype, item_intent, format_alert_line(to_add)))
 
                 db.commit()
 
@@ -1662,12 +1750,15 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 lines = [f"✅ <b>Dạ em đã thêm {len(inserted)} lịch nhắc vào danh sách của anh:</b>\n"]
-                for (m_msg, m_time, m_rtype, is_meet) in inserted:
+                for (m_msg, m_time, m_rtype, m_intent, m_alert_line) in inserted:
                     wd = weekday_vi(m_time)
                     time_str = f"{wd}, {m_time.strftime('%d-%m-%Y %H:%M')}"
                     rt_str = format_repeat_type(m_rtype) if m_rtype != "none" else "1 lần"
-                    meet_note = " <i>(kèm nhắc trước 15p & 5p)</i>" if is_meet else ""
-                    lines.append(f"• <b>{m_msg}</b>\n  ⏰ {time_str} ({rt_str}){meet_note}")
+                    badge = intent_badge(m_intent.id)
+                    alert_note = ""
+                    if m_alert_line:
+                        alert_note = " <i>(nhắc " + m_alert_line.split("</b> ", 1)[-1] + ")</i>"
+                    lines.append(f"• <b>{html.escape(m_msg)}</b>{badge}\n  ⏰ {time_str} ({rt_str}){alert_note}")
 
                 if skipped_duplicates > 0:
                     lines.append(f"\n<i>(Đã bỏ qua {skipped_duplicates} lịch bị trùng trước đó)</i>")
@@ -1700,7 +1791,9 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     slot_desc = "9h sáng" if slot == "morning_9h" else "16h chiều" if slot == "afternoon_16h" else f"{remind_time.strftime('%H:%M')}"
                     _llm_auto_slot_note = f"\n💡 <i>(Em đã tự động đặt vào lúc {slot_desc} theo ngữ cảnh cho anh)</i>"
 
-                _llm_meeting = parsed and bool(single_item.get("is_meeting"))
+                if parsed:
+                    _llm_intent = intent_from_llm(single_item, single_item.get("clean_message") or text)
+                    _llm_explicit_time = bool(single_item.get("has_explicit_time") or single_item.get("is_meeting"))
                 _llm_parsed = parsed
                 if parsed:
                     parse_source = PARSE_SOURCE_LLM
@@ -1728,6 +1821,31 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if fw_prefix or _llm_parsed or parse_source == PARSE_SOURCE_DICTIONARY:
         message = fw_prefix + text
 
+    # Intent (loại việc): LLM trả về; Rule/Dictionary/Default phân loại bằng intents.json.
+    # Nhắc trước theo phút khi có giờ cụ thể (LLM: has_explicit_time; Rule/Dict: có giờ trong câu),
+    # hoặc khi intent cho phép nhắc theo buổi (mời ăn "trưa mai", "tối nay").
+    if parse_source == PARSE_SOURCE_LLM and _llm_intent is not None:
+        intent = _llm_intent
+        minute_alerts = _llm_explicit_time and not is_lunar
+    else:
+        intent = detect_intent(text)
+        minute_alerts = (
+            parse_source in (PARSE_SOURCE_RULE, PARSE_SOURCE_DICTIONARY)
+            and minute_alerts_apply(text, repeat_type, is_lunar)
+        )
+    if not is_lunar and not minute_alerts and parse_source != PARSE_SOURCE_DEFAULT and intent.period_times:
+        try:
+            period_time, period_hit = apply_intent_period_time(text, intent, remind_time, repeat_type)
+        except Exception:
+            logger.exception("intent_period_time_failed")
+            period_time, period_hit = remind_time, False
+        if period_time != remind_time:
+            print(f"🍽 INTENT PERIOD TIME: '{text}' {remind_time:%d/%m %H:%M} -> {period_time:%d/%m %H:%M}", flush=True)
+            remind_time = period_time
+            note = f"\n💡 <i>(Không thấy giờ cụ thể, em đặt lúc {remind_time.strftime('%H:%M')} theo giờ {intent.label.lower()})</i>"
+            _llm_auto_slot_note, _dict_auto_slot_note = None, note
+        minute_alerts = period_hit and intent.alerts_on_period
+
     text_repeat =format_repeat_type(repeat_type) if repeat_type != "none" else ""
 
     wd = weekday_vi(remind_time)
@@ -1750,17 +1868,10 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_reply += _llm_auto_slot_note
     if _dict_auto_slot_note:
         text_reply += _dict_auto_slot_note
-    # Cuộc họp: LLM tự nhận diện (is_meeting); Rule/Dictionary dựa vào meeting_keywords + giờ cụ thể
-    is_meeting = _llm_meeting or (
-        parse_source in (PARSE_SOURCE_RULE, PARSE_SOURCE_DICTIONARY)
-        and is_meeting_reminder(text, repeat_type, is_lunar)
-    )
-    reminders_to_add = (
-        build_meeting_reminders(message, remind_time, repeat_type)
-        if is_meeting
-        else [(message, remind_time, repeat_type)]
-    )
-    text_reply += format_meeting_alert_line(reminders_to_add)
+    reminders_to_add = build_intent_reminders(message, remind_time, repeat_type, intent, minute_alerts)
+    is_meeting = intent.id == "hop"
+    text_reply += format_intent_lines(intent, repeat_type)
+    text_reply += format_alert_line(reminders_to_add)
     text_reply += "\n" + format_parse_source(parse_source or PARSE_SOURCE_DEFAULT)
     if not is_lunar and _fallback_hint:
         text_reply += "\n\n💡 Gửi <code>h</code> để xem hướng dẫn cú pháp chi tiết."
@@ -1775,12 +1886,14 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        for reminder_message, reminder_at, reminder_repeat_type in reminders_to_add:
+        for idx, (reminder_message, reminder_at, reminder_repeat_type) in enumerate(reminders_to_add):
+            main = idx == 0  # lịch nhắc thêm không mang thông tin âm lịch của lịch chính
             cursor.execute(
-                "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "INSERT INTO reminders (user_id, message, remind_at, repeat_type, is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap, intent)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, reminder_message, reminder_at, reminder_repeat_type,
-                 is_lunar, lunar_day, lunar_month, lunar_year, lunar_leap),
+                 is_lunar if main else False, lunar_day if main else None, lunar_month if main else None,
+                 lunar_year if main else None, lunar_leap if main else False, intent.id),
             )
         db.commit()
     except Exception:
@@ -1788,9 +1901,10 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise
 
     logger.info(
-        "reminder_created user_id=%s reminder_count=%s is_meeting=%s source=%s lunar=%s",
+        "reminder_created user_id=%s reminder_count=%s intent=%s is_meeting=%s source=%s lunar=%s",
         user_id,
         len(reminders_to_add),
+        intent.id,
         is_meeting,
         parse_source,
         is_lunar,

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     lunar_month TINYINT UNSIGNED DEFAULT NULL,
     lunar_year SMALLINT UNSIGNED DEFAULT NULL,
     lunar_leap BOOLEAN DEFAULT FALSE,
+    intent VARCHAR(20) DEFAULT NULL,   -- loại việc (intents.json): hop, moi_an, deadline...
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_remind_at ON reminders(remind_at);

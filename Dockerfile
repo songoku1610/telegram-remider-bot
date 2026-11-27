@@ -15,5 +15,6 @@ COPY lunarcalendar.py .
 COPY llm_service.py .
 COPY dictionary_parser.py .
 COPY dictionary.json .
+COPY intents.json .
 
 CMD ["python", "main.py"]

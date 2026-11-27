@@ -4,7 +4,9 @@ Bot nhắc lịch cá nhân qua Telegram, hỗ trợ **lịch dương**, **lịc
 
 Người dùng có thể gõ theo cú pháp hoặc chat tự nhiên ("Mai e email cho đối tác nhé", "5h cả nhóm lên phòng làm tiếp"), kể cả tin forward. Tin nhắn đi qua 4 tầng **Rule → Dictionary → LLM → Default**; tầng Dictionary (từ điển `dictionary.json`) xử lý phần lớn câu tự nhiên nên rất ít khi phải gọi LLM. Tin xác nhận luôn ghi tầng đã nhận diện: `🏷 Nhận diện bởi: Rule / Dictionary / LLM / Default`.
 
-Tài liệu chi tiết về từ điển: [docs/dictionary.md](docs/dictionary.md).
+Mỗi lịch còn được phân **loại việc** (intent: họp, mời ăn, hạn chót, thanh toán...) bằng từ điển `intents.json`, và bot nhắc thêm theo loại: họp nhắc trước 15/5 phút, mời ăn trước 45/30 phút, hạn chót trước 1 ngày...
+
+Tài liệu chi tiết: [docs/dictionary.md](docs/dictionary.md) (từ điển thời gian), [docs/intents.md](docs/intents.md) (intent).
 
 ---
 
@@ -27,7 +29,7 @@ Tài liệu chi tiết về từ điển: [docs/dictionary.md](docs/dictionary.m
     - [Khởi động \& Migration](#khởi-động--migration)
     - [Nhận diện \& phân tích câu lệnh](#nhận-diện--phân-tích-câu-lệnh)
     - [Luồng Rule → Dictionary → LLM → Default](#luồng-rule--dictionary--llm--default)
-    - [Nhắc cuộc họp](#nhắc-cuộc-họp)
+    - [Intent và nhắc thêm theo loại việc](#intent-và-nhắc-thêm-theo-loại-việc)
     - [Parse thời gian dương lịch](#parse-thời-gian-dương-lịch)
     - [Parse thời gian âm lịch](#parse-thời-gian-âm-lịch)
     - [Lịch âm – thuật toán chuyển đổi](#lịch-âm--thuật-toán-chuyển-đổi)
@@ -66,7 +68,8 @@ main.py
 |---|---|
 | `telegrambot.py` | Handler, tầng Rule, ghép luồng, lưu DB, worker |
 | `dictionary_parser.py` | Tầng Dictionary: đọc `dictionary.json`, bóc thời gian, dịch về cú pháp chuẩn |
-| `dictionary.json` | Từ điển: cụm từ, regex, buổi, từ khoá ý định, từ khoá họp, chặn, quy tắc giờ |
+| `dictionary.json` | Từ điển thời gian: cụm từ, regex, buổi, từ khoá ý định, bộ chặn, quy tắc giờ |
+| `intents.json` | Danh sách intent (loại việc), từ khoá có trọng số, hành vi nhắc thêm của từng loại |
 | `llm_service.py` | Gọi Gemini/OpenRouter, prompt có quy tắc giờ mặc định |
 | `lunarcalendar.py` | Chuyển đổi âm ↔ dương |
 | `weather.py`, `weatherAPI.py` | Thời tiết |
@@ -169,6 +172,7 @@ CREATE TABLE reminders (
     lunar_month  TINYINT UNSIGNED,          -- Tháng âm lịch gốc
     lunar_year   SMALLINT UNSIGNED,         -- Năm âm lịch gốc
     lunar_leap   BOOLEAN DEFAULT FALSE,     -- Tháng nhuận
+    intent       VARCHAR(20) DEFAULT NULL,  -- Loại việc (intents.json): hop, moi_an, deadline, ... (NULL: lịch cũ)
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
@@ -358,7 +362,7 @@ delete <ID>
 | Không ghi ngày, gửi trước 9h | 09:00 hôm nay |
 | Không ghi ngày, gửi sau 9h | 09:00 sáng mai |
 | Ghi rõ "hôm nay" và đã qua 9h | 16:00 hôm nay; sau 16h → 20:00; sau 20h → 09:00 mai |
-| Có buổi ("chiều nay", "tối mai") | Giờ mặc định của buổi: sáng 09:00, trưa 12:00, chiều 16:00, tối 20:00... (xem `periods` trong `dictionary.json`) |
+| Có buổi ("chiều nay", "tối mai") | Giờ mặc định của buổi: sáng 09:00, trưa 12:00, chiều 16:00, tối 20:00... (xem `periods` trong `dictionary.json`). Riêng **mời ăn buổi tối → 18:00** (`intents.json` → `period_times`) |
 
 Không còn quy tắc 16:00 cho deadline/nộp/báo cáo: không ghi giờ thì luôn 9h sáng.
 
@@ -370,10 +374,11 @@ Không còn quy tắc 16:00 cho deadline/nộp/báo cáo: không ghi giờ thì 
 | 5h cả nhóm lên phòng làm tiếp | 18:30 | 05:00 sáng mai |
 | 9h gọi điện cho mẹ | 14:00 | 21:00 hôm nay |
 | **8h họp giao ban** | 14:00 | **08:00 sáng mai** (cuộc họp chỉ dời với 1h–6h) |
+| 7h ăn tối với khách | 14:00 | 19:00 hôm nay (mời ăn dời với 1h–9h) |
 | họp lúc 6h | 14:00 | 18:00 hôm nay |
 | họp lúc 5h mai / 5h sáng / 05h / 10h | bất kỳ | giữ nguyên, vì đã ghi ngày, buổi, hoặc giờ 2 chữ số |
 
-Khoảng giờ cấu hình trong `dictionary.json` → `bare_hour_pm`: `hours` (mặc định `[1, 9]`) cho tin thường, `meeting_hours` (mặc định `[1, 6]`) cho cuộc họp, để không đặt họp tối muộn. Không áp dụng cho lịch lặp và âm lịch.
+Khoảng giờ mặc định cấu hình trong `dictionary.json` → `bare_hour_pm.hours` (`[1, 9]`). Intent có `behavior.bare_hour_pm` trong `intents.json` dùng khoảng riêng: họp `[1, 6]` để không đặt họp tối muộn, mời ăn `[1, 9]`. Không áp dụng cho lịch lặp và âm lịch.
 
 **Thời lượng không phải giờ:** "còn 2h", "mất 1 tiếng", "kéo dài 1h30", "tối đa 3h" được đổi thành "N tiếng" để không bị hiểu là 2 giờ sáng.
 
@@ -444,16 +449,29 @@ Sau bước 1–2, giờ trần 1 chữ số được hiệu chỉnh bằng `shi
 
 ---
 
-### Nhắc cuộc họp
+### Intent và nhắc thêm theo loại việc
 
-Một lịch được coi là **cuộc họp** khi:
+Sau khi đã có thời gian, mỗi lịch được phân loại (intent):
 
-- LLM trả `is_meeting = true`, hoặc
-- (Rule/Dictionary) câu có từ khoá trong `meeting_keywords` (họp, meeting, hội ý, giao ban, sync, phỏng vấn, gặp khách...) **và** người dùng ghi giờ cụ thể **và** không lặp **và** không phải âm lịch.
+- **Rule / Dictionary / Default:** `classify_intent(text)` dò từ điển `intents.json` có tính điểm (cụm dài thắng, từ khoá đầu câu được cộng điểm, phần sau "để/về việc" nhẹ điểm hơn). Không khớp → `khac`.
+- **LLM:** trả `intent` thuộc cùng danh sách (prompt đọc danh sách từ `intents.json`). Intent lạ → tự phân loại; `is_meeting=true` kiểu cũ → `hop`.
 
-Khi đó bot tạo thêm 2 reminder "Nhắc trước 15 phút: …" và "Nhắc trước 5 phút: …" ngoài lịch đúng giờ (`MEETING_ALERT_MINUTES` trong `telegrambot.py`). Mốc nào đã ở quá khứ thì bỏ qua (vd "họp 10 phút nữa" chỉ có nhắc trước 5 phút). Tin xác nhận có dòng `🔔 Nhắc thêm: trước 15 phút, trước 5 phút và đúng giờ`.
+| Intent | Nhắc thêm (ngoài đúng giờ) |
+|---|---|
+| 👥 `hop` Họp | Trước 15 và 5 phút |
+| 🍽 `moi_an` Mời ăn / tiệc | Trước 45 và 30 phút, kể cả khi chỉ ghi buổi trưa/tối (tối mặc định **18:00**) |
+| ⏳ `deadline` Hạn chót | Trước 1 ngày, chỉ khi còn hơn 24 giờ |
+| 💳 `thanh_toan` Thanh toán | Trước 1 ngày, chỉ khi còn hơn 24 giờ; gợi ý "hàng tháng" |
+| 🎉 `su_kien` Sự kiện | Trước 1 ngày, chỉ khi còn hơn 24 giờ; gợi ý "hàng năm" |
+| 💊 `suc_khoe`, 📞 `lien_lac`, 💼 `cong_viec`, 🏠 `ca_nhan`, 📌 `khac` | Không |
 
-Ba reminder được lưu độc lập để worker hiện tại xử lý như lịch thường. Log `reminder_created` chỉ ghi ID người dùng, số reminder, cờ `is_meeting` và nguồn, không ghi nội dung cuộc họp.
+- Nhắc trước **theo phút** chỉ khi người dùng ghi giờ cụ thể (giờ tự đặt 9h không phải giờ hẹn thật), không âm lịch; với Rule/Dictionary còn phải không lặp. Mốc đã qua thì bỏ (vd "họp 10 phút nữa" chỉ còn nhắc trước 5 phút).
+- Nhắc trước **1 ngày** chỉ cho lịch không lặp; lịch lặp hàng tháng/năm đã có nhắc trước 1 ngày của worker.
+- Các lịch nhắc thêm là bản ghi riêng ("Nhắc trước 45 phút: …", "Nhắc trước 1 ngày: …"), cùng `intent` với lịch chính.
+- Tin xác nhận có dòng `🗂 Loại: ⏳ Hạn chót`, dòng `🔔 Nhắc thêm: trước 1 ngày và đúng giờ`, và gợi ý lặp nếu có. Lệnh `ls` hiện biểu tượng loại cạnh ID.
+- Log `reminder_created` ghi `intent`, số reminder, nguồn; không ghi nội dung.
+
+Sửa hành vi hoặc từ khoá: chỉ cần sửa `intents.json` rồi khởi động lại bot. Chi tiết: [docs/intents.md](docs/intents.md).
 
 ---
 
@@ -625,9 +643,10 @@ Chạy bằng `python` thường (không cần pytest), không cần DB hay API 
 |---|---|
 | `python test_dictionary_parser.py` | ~170 câu qua tầng Dictionary với thời điểm cố định (thứ 4, 18/11/2026 10:00), gồm câu tự nhiên, câu phải trả None, thời lượng, giờ trần, âm lịch |
 | `python test_parse_routing.py` | Toàn bộ `add_reminder()` với DB giả, LLM giả và giờ cố định 08:00 hôm nay: kiểm tra tầng nhận diện, số lần gọi LLM, số lịch được lưu, nhắc họp |
-| `python test_llm_flow.py` | Cú pháp LLM chuẩn hoá có parse được không, prompt, lọc mốc nhắc họp đã qua |
+| `python test_llm_flow.py` | Cú pháp LLM chuẩn hoá có parse được không, prompt, lọc mốc nhắc họp đã qua, migration |
+| `python test_intents.py` | 155 câu phân loại intent (100 câu xây từ điển + 50 câu kiểm tra độc lập + 5 câu từ lóng/viết tắt), 51 câu ở cổng "có phải yêu cầu nhắc", hành vi nhắc thêm, giờ trần theo intent, giờ theo buổi của mời ăn, intent từ LLM |
 
-Khi sửa `dictionary.json`, chạy lại cả ba. Thêm câu thực tế bị nhận sai vào `test_dictionary_parser.py` trước khi sửa từ điển.
+Khi sửa `dictionary.json` hoặc `intents.json`, chạy lại cả bốn. Thêm câu thực tế bị nhận sai vào `test_dictionary_parser.py` trước khi sửa từ điển.
 
 ---
 
@@ -636,3 +655,4 @@ Khi sửa `dictionary.json`, chạy lại cả ba. Thêm câu thực tế bị n
 - **Giờ hôm nay đã qua vẫn được lưu** ("nộp báo cáo chiều nay" gửi lúc 17h, "họp 2h chiều nay" gửi lúc 16h): lịch có giờ trong quá khứ nên worker gửi ngay ở lượt quét kế tiếp.
 - **Giờ 1h–5h khi cả giờ sáng lẫn giờ chiều hôm nay đã qua** ("gọi khách 3h" lúc 16:31) → 03:00 sáng mai.
 - **Cú pháp giờ đứng đầu trừ 15 phút** ("5h30 họp" → 17:15), cộng với nhắc họp 15/5 phút nên bị nhắc sớm hai lần.
+- **Intent dựa trên từ khoá:** câu dùng từ chưa có trong `intents.json` rơi vào `khac` (chỉ mất phần nhắc thêm, lịch vẫn đúng). Lịch tạo trước khi có cột `intent` có `intent = NULL`.

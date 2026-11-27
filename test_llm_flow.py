@@ -146,7 +146,7 @@ def test_migration_uses_metadata_check_before_adding_columns():
     assert fake_db.rolled_back is False
     assert fake_db.cursor_instance.closed is True
     assert fake_db.cursor_instance.columns == {
-        "is_lunar", "lunar_day", "lunar_month", "lunar_year", "lunar_leap"
+        "is_lunar", "lunar_day", "lunar_month", "lunar_year", "lunar_leap", "intent"
     }
 
 

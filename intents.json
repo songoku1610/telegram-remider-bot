@@ -1,0 +1,346 @@
+{
+  "_meta": {
+    "version": 1,
+    "description": "Danh sách intent (loại việc) của lịch nhắc và từ điển từ khoá để phân loại. Chỉ dùng SAU KHI đã xác định câu là yêu cầu nhắc lịch (cổng intent_keywords/blockers trong dictionary.json). Phân loại sai chỉ ảnh hưởng hành vi nhắc thêm, không tạo lịch rác.",
+    "normalization": "NFKC + chữ thường + gộp khoảng trắng. KHÔNG bỏ dấu (bỏ dấu gây trùng: hop = họp/hợp/hộp, ban = bàn/bán/bạn). Chỉ thêm biến thể không dấu cho cụm >= 2 từ hoặc từ không mơ hồ.",
+    "scoring": {
+      "matching": "Ghép theo ranh giới từ. Tất cả từ khoá của mọi intent được xét chung, CỤM DÀI NHẤT được chiếm chỗ trước; cụm ngắn nằm trong cụm dài đã khớp bị bỏ qua (vd 'nộp tiền điện' chỉ tính cho thanh_toan, không tính 'nộp' cho deadline).",
+      "weights": { "strong": 3, "weak": 1 },
+      "phrase_bonus_per_extra_word": 0.5,
+      "score": "Tổng (trọng số × (1 + 0.5 × (số từ - 1)) × hệ số mục đích) của các từ khoá khớp, mỗi từ khoá tính 1 lần, + first_match_bonus cho intent của từ khoá khớp đầu tiên.",
+      "exclude": "Câu khớp một cụm trong 'exclude' của intent thì intent đó bị loại (điểm = 0).",
+      "first_match_bonus": 1,
+      "first_match_note": "Từ khoá khớp ĐẦU TIÊN trong câu (thường là động từ chính) được cộng thêm điểm: 'hoàn thành slide thuyết trình' → deadline, không phải họp.",
+      "purpose_markers": ["để", "nhằm", "về việc", "về vụ", "bàn về", "liên quan", "liên quan đến", "cho việc", "phục vụ"],
+      "purpose_factor": 0.5,
+      "purpose_note": "Phần câu SAU từ chỉ mục đích/chủ đề: mỗi intent chỉ tính 1 từ khoá điểm cao nhất, nhân 0.5: 'họp với khách để chốt thanh toán' → họp; 'gọi cho khách về việc báo giá' → liên lạc.",
+      "abbreviations": { "vs": "với", "ctay": "chia tay", "c tay": "chia tay", "bc": "báo cáo", "hđ": "hợp đồng", "ae": "anh em", "a e": "anh em", "đt": "điện thoại", "ks": "khách sạn", "nv": "nhân viên" },
+      "abbreviations_note": "Viết tắt được mở rộng TRƯỚC khi dò từ khoá (chỉ dùng để phân loại, không đổi nội dung lưu). Ghép theo ranh giới từ.",
+      "min_score": 1,
+      "tie_break": "Bằng điểm thì intent có 'priority' cao hơn thắng.",
+      "fallback": "Không intent nào đạt min_score → 'khac'."
+    },
+    "behavior_fields": {
+      "period_times": "Giờ riêng của intent khi người dùng chỉ ghi buổi, không ghi giờ: {từ chỉ buổi: HH:MM}. Chỉ thay khi giờ đang là giờ mặc định của buổi đó (dictionary.json → periods) và giờ mới còn ở tương lai.",
+      "alerts_on_period": "true: vẫn tạo alerts_before_minutes khi người dùng chỉ ghi buổi có trong period_times (vd 'trưa mai mời ăn').",
+      "alerts_before_minutes": "Danh sách phút nhắc TRƯỚC, ngoài lịch đúng giờ. Mốc đã ở quá khứ thì bỏ. Chỉ áp dụng khi người dùng ghi giờ cụ thể, không lặp, không âm lịch.",
+      "alert_before_days": "Nhắc trước N ngày (cùng giờ) nếu còn hơn 'only_if_lead_hours_over' giờ nữa mới tới lịch; luôn có lịch đúng giờ.",
+      "bare_hour_pm": "Khoảng giờ 1 chữ số được hiểu là giờ chiều khi giờ sáng hôm nay đã qua (ghi đè dictionary.json → bare_hour_pm.hours). null = dùng mặc định.",
+      "suggest_repeat": "Gợi ý (chỉ hiển thị trong tin xác nhận) thêm tần suất lặp khi người dùng chưa ghi lặp. Không tự đặt lặp."
+    }
+  },
+
+  "fallback_intent": "khac",
+
+  "intents": [
+    {
+      "id": "hop",
+      "label": "Họp",
+      "emoji": "👥",
+      "priority": 90,
+      "behavior": {
+        "alerts_before_minutes": [15, 5],
+        "alert_before_days": null,
+        "bare_hour_pm": [1, 6],
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "họp", "cuộc họp", "buổi họp", "phiên họp", "họp nhanh", "họp gấp", "họp online", "họp trực tuyến", "họp offline",
+          "họp phòng", "họp ban", "họp nhóm", "họp team", "họp dự án", "họp tổ", "họp chi bộ", "họp công đoàn", "họp phụ huynh",
+          "họp lớp", "họp mặt", "họp tuần", "họp tháng", "họp quý", "họp giao ban", "họp hội đồng", "họp cổ đông", "họp đại hội",
+          "giao ban", "hội ý", "hội thảo", "hội nghị", "tọa đàm", "toạ đàm", "đại hội", "sơ kết", "tổng kết", "rà soát",
+          "meeting", "meet", "google meet", "gg meet", "zoom", "ms teams", "họp zoom", "họp teams", "conference call", "con call",
+          "standup", "stand-up", "stand up", "daily scrum", "daily meeting", "scrum", "sprint planning", "sprint review",
+          "retro", "retrospective", "kick off", "kickoff", "kick-off", "sync", "sync up", "one on one", "1-1", "1:1",
+          "brainstorm", "workshop", "webinar", "bàn kế hoạch", "bàn công việc", "bàn phương án", "bàn về",
+          "sinh hoạt", "sinh hoạt chi bộ", "sinh hoạt đoàn", "sinh hoạt lớp", "sinh hoạt chuyên môn", "họp chuyên môn", "seminar", "training", "đào tạo", "tập huấn",
+          "phỏng vấn", "interview", "bảo vệ luận văn", "bảo vệ đồ án", "thuyết trình", "trình bày",
+          "demo", "review", "review code", "code review", "nghiệm thu", "bàn giao",
+          "gặp đối tác", "gặp khách", "gặp khách hàng", "gặp sếp", "gặp giám đốc", "gặp lãnh đạo",
+          "làm việc với", "tiếp khách", "tiếp đoàn", "đón đoàn", "tiếp đối tác", "thăm khách hàng",
+          "hop nhanh", "hoi y", "phong van"
+        ],
+        "weak": [
+          "hop", "bàn", "bàn bạc", "thảo luận", "trao đổi", "call", "gọi nhóm", "teams", "gặp", "gặp anh", "gặp chị", "gặp mặt", "lên phòng", "qua phòng",
+          "xuống phòng", "phòng họp", "điểm danh", "daily"
+        ]
+      },
+      "exclude": ["họp lớp ăn", "hợp đồng"],
+      "examples": ["họp giao ban 8h mai", "3h chiều meeting với khách", "hội ý dự án 2 tiếng nữa", "phỏng vấn ứng viên 10h thứ 5"]
+    },
+
+    {
+      "id": "moi_an",
+      "label": "Mời ăn / tiệc",
+      "emoji": "🍽",
+      "priority": 85,
+      "behavior": {
+        "alerts_before_minutes": [45, 30],
+        "alert_before_days": null,
+        "bare_hour_pm": [1, 9],
+        "suggest_repeat": null,
+        "period_times": { "trưa": "12:00", "tối": "18:00" },
+        "alerts_on_period": true
+      },
+      "keywords": {
+        "strong": [
+          "mời ăn", "mời cơm", "mời nhậu", "mời cafe", "mời cà phê", "mời cf", "mời trà", "mời đi ăn", "mời ăn trưa", "mời ăn tối",
+          "đi ăn", "ăn trưa", "ăn tối", "ăn sáng", "ăn cơm", "ăn cơm trưa", "ăn cơm tối", "ăn uống", "ăn với", "ăn cùng",
+          "ăn trưa với", "ăn tối với", "ăn cơm với", "ăn lẩu", "ăn nướng", "ăn buffet", "ăn tiệc", "đi ăn tiệc",
+          "dùng bữa", "dùng cơm", "bữa trưa", "bữa tối", "bữa sáng", "bữa cơm", "bữa tiệc", "cơm trưa", "cơm tối", "cơm khách",
+          "tiệc", "dự tiệc", "đi tiệc", "tiệc tùng", "tiệc cưới", "đám cưới", "ăn cưới", "đi cưới", "dự đám cưới", "ăn hỏi", "đám hỏi",
+          "tiệc sinh nhật", "ăn sinh nhật", "tiệc tất niên", "tất niên", "tân niên", "tiệc chia tay", "tiệc mừng", "tiệc công ty",
+          "liên hoan", "đi liên hoan", "party", "gala", "gala dinner", "year end party", "yep", "team building", "teambuilding",
+          "nhậu", "đi nhậu", "lai rai", "bia", "đi bia", "uống bia", "đi uống", "uống rượu", "beer",
+          "cafe", "cà phê", "cf", "coffee", "đi cafe", "đi cà phê", "uống cafe", "uống cà phê", "trà sữa", "trà chiều",
+          "lunch", "dinner", "breakfast", "brunch", "ăn khao", "khao",
+          "làm chén", "làm vài chén", "đi làm chén", "làm cốc", "làm vài cốc", "làm ly", "làm vài ly", "làm lon", "làm vài lon",
+          "làm vài ve", "nâng ly", "cụng ly", "chén chú chén anh", "tiệc chia tay", "liên hoan chia tay", "ăn chia tay", "nhậu chia tay",
+          "mời trưa", "mời tối", "mời cơm trưa", "mời cơm tối", "mời ăn cơm",
+          "moi an", "di an", "an trua", "an toi", "an com", "di nhau", "lien hoan", "ca phe", "an cuoi", "dam cuoi"
+        ],
+        "weak": [
+          "mời", "nhà hàng", "quán", "chia tay", "đặt bàn", "đặt chỗ nhà hàng", "lẩu", "nướng", "buffet", "ăn"
+        ]
+      },
+      "exclude": ["ăn kiêng", "ăn chay", "uống thuốc", "ăn bớt"],
+      "examples": ["tối mai 7h mời đối tác ăn tối", "trưa nay 11h30 ăn cơm với khách", "thứ 7 đi đám cưới bạn", "6h tối liên hoan phòng"]
+    },
+
+    {
+      "id": "deadline",
+      "label": "Hạn chót",
+      "emoji": "⏳",
+      "priority": 70,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": { "days": 1, "only_if_lead_hours_over": 24 },
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "deadline", "dl nộp", "hạn chót", "hạn cuối", "hạn nộp", "hạn gửi", "hạn hoàn thành", "hạn báo cáo", "hạn đăng ký",
+          "hết hạn", "đến hạn", "tới hạn", "quá hạn", "hết hạn nộp", "trước hạn", "đúng hạn",
+          "nộp", "nộp bài", "nộp báo cáo", "nộp hồ sơ", "nộp đơn", "nộp luận văn", "nộp đồ án", "nộp tài liệu", "nộp kế hoạch",
+          "nộp đề xuất", "nộp dự toán", "nộp tờ khai", "quyết toán", "khai thuế",
+          "gửi báo cáo", "gửi hồ sơ", "gửi kế hoạch", "gửi đề xuất", "gửi bản", "gửi file", "gửi tài liệu", "gửi số liệu",
+          "hoàn thành", "hoàn thiện", "xong trước", "phải xong", "chốt", "chốt số liệu", "chốt danh sách", "chốt hồ sơ",
+          "báo cáo", "báo cáo tuần", "báo cáo tháng", "báo cáo quý", "báo cáo năm", "báo cáo tiến độ",
+          "submit", "due", "due date", "release", "go live", "golive", "phát hành", "bàn giao sản phẩm",
+          "đăng ký", "gia hạn", "gia hạn hợp đồng", "gia hạn domain", "gia hạn hộ chiếu", "gia hạn visa",
+          "đăng kiểm", "hết hạn bảo hiểm", "hết hạn hợp đồng", "hết hạn trial", "hết hạn dùng thử",
+          "trình ký", "trình duyệt", "ký duyệt", "duyệt", "phê duyệt", "ký hợp đồng", "ký", "trình",
+          "soạn", "soạn thảo", "viết báo cáo", "làm báo cáo", "làm slide", "làm hồ sơ", "chuẩn bị tài liệu",
+          "han chot", "han nop", "het han", "nop bai", "nop bao cao", "nop ho so", "bao cao"
+        ],
+        "weak": [
+          "nop", "chuẩn bị", "làm xong", "hạn", "kpi", "okr", "kế hoạch", "dự toán", "đề xuất", "hồ sơ"
+        ]
+      },
+      "exclude": ["nộp tiền", "nộp phạt", "nộp học phí", "nộp phí"],
+      "examples": ["thứ 6 nộp báo cáo tháng", "deadline dự án 30/11", "20/12 hết hạn hợp đồng thuê nhà", "mai chốt số liệu quý"]
+    },
+
+    {
+      "id": "thanh_toan",
+      "label": "Thanh toán",
+      "emoji": "💳",
+      "priority": 75,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": { "days": 1, "only_if_lead_hours_over": 24 },
+        "bare_hour_pm": null,
+        "suggest_repeat": "monthly"
+      },
+      "keywords": {
+        "strong": [
+          "thanh toán", "trả tiền", "đóng tiền", "nộp tiền", "chuyển tiền", "chuyển khoản", "ck tiền", "bắn tiền",
+          "trả nợ", "trả góp", "trả lãi", "đóng lãi", "tất toán", "trả thẻ", "thanh toán thẻ", "sao kê", "dư nợ", "khoản vay",
+          "tiền điện", "tiền nước", "tiền nhà", "tiền thuê nhà", "tiền mạng", "tiền internet", "tiền wifi", "cước", "cước điện thoại",
+          "tiền gas", "tiền ga", "tiền rác", "phí dịch vụ", "phí quản lý", "phí chung cư", "phí gửi xe", "tiền gửi xe",
+          "học phí", "đóng học", "đóng học phí", "nộp học phí", "tiền học", "tiền học thêm",
+          "bảo hiểm", "đóng bảo hiểm", "phí bảo hiểm", "bhxh", "bhyt", "tiền bảo hiểm",
+          "thuế", "đóng thuế", "nộp thuế", "phí", "nộp phí", "nộp phạt", "đóng phạt", "lệ phí",
+          "lương", "trả lương", "phát lương", "chi lương", "nhận lương", "tạm ứng", "hoàn ứng", "thanh toán hóa đơn",
+          "hóa đơn", "hoá đơn", "xuất hóa đơn", "xuất hoá đơn", "công nợ", "thu nợ", "đòi nợ", "thu tiền", "nhận tiền",
+          "gửi tiết kiệm", "đáo hạn", "rút tiền", "rút sổ", "nạp tiền", "nạp thẻ", "gia hạn gói", "gia hạn thuê bao",
+          "subscription", "renew", "payment", "pay", "bill", "invoice",
+          "thanh toan", "tra tien", "dong tien", "chuyen khoan", "chuyen tien", "tien dien", "tien nuoc", "tien nha", "hoc phi"
+        ],
+        "weak": [
+          "tiền", "đóng", "trả", "ck", "ngân hàng", "thẻ tín dụng", "visa", "momo", "vnpay", "zalopay", "stk"
+        ],
+        "_note": "'ck' chỉ để weak vì còn nghĩa 'chồng', 'chứng khoán'. 'visa' weak vì có thể là thị thực."
+      },
+      "exclude": [],
+      "examples": ["mùng 5 đóng tiền nhà", "ngày 20 thanh toán thẻ tín dụng", "mai chuyển khoản cho nhà cung cấp", "cuối tháng trả lương"]
+    },
+
+    {
+      "id": "su_kien",
+      "label": "Sự kiện / ngày đặc biệt",
+      "emoji": "🎉",
+      "priority": 65,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": { "days": 1, "only_if_lead_hours_over": 24 },
+        "bare_hour_pm": null,
+        "suggest_repeat": "yearly"
+      },
+      "keywords": {
+        "strong": [
+          "sinh nhật", "sn", "hpbd", "happy birthday", "birthday", "mừng sinh nhật", "chúc mừng sinh nhật", "thôi nôi", "đầy tháng",
+          "kỷ niệm", "kỉ niệm", "ngày cưới", "kỷ niệm ngày cưới", "anniversary", "ngày yêu nhau",
+          "giỗ", "ngày giỗ", "đám giỗ", "giỗ tổ", "cúng", "cúng rằm", "cúng mùng 1", "rằm", "mùng 1", "lễ chùa", "đi chùa", "tảo mộ",
+          "đám ma", "đám tang", "viếng", "đi viếng", "phúng viếng", "đưa tang", "lễ tang",
+          "khai trương", "lễ khai trương", "khánh thành", "lễ khánh thành", "động thổ", "lễ ký kết", "ra mắt", "lễ ra mắt",
+          "tốt nghiệp", "lễ tốt nghiệp", "khai giảng", "bế giảng", "lễ trao giải", "lễ kỷ niệm", "lễ hội",
+          "tết", "noel", "giáng sinh", "valentine", "quốc tế phụ nữ", "ngày nhà giáo", "quốc khánh", "trung thu",
+          "chúc mừng", "tặng quà", "mua quà", "gửi quà", "hoa tặng", "đặt hoa", "mua hoa",
+          "sinh nhat", "ky niem", "ngay cuoi", "dam gio", "di chua"
+        ],
+        "weak": ["lễ", "quà", "hoa", "chúc"]
+      },
+      "exclude": ["tiệc", "liên hoan", "nhậu", "ăn mừng", "ăn sinh nhật", "đi ăn", "ăn tối", "ăn trưa"],
+      "examples": ["thứ 5 sinh nhật vợ", "15/3 âm lịch giỗ ông nội", "20/10 mua hoa cho mẹ", "mai đi viếng đám tang"]
+    },
+
+    {
+      "id": "suc_khoe",
+      "label": "Sức khoẻ",
+      "emoji": "💊",
+      "priority": 60,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": null,
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "uống thuốc", "thuốc", "uống vitamin", "vitamin", "bổ sung", "nhỏ mắt", "thuốc nhỏ mắt", "xịt mũi", "bôi thuốc", "thay băng",
+          "khám", "khám bệnh", "đi khám", "khám sức khỏe", "khám sức khoẻ", "khám định kỳ", "khám tổng quát", "tái khám",
+          "khám răng", "nha sĩ", "nha khoa", "lấy cao răng", "nhổ răng", "niềng răng", "khám mắt", "đo mắt", "cắt kính",
+          "xét nghiệm", "lấy máu", "chụp x-quang", "chụp xquang", "chụp ct", "chụp mri", "siêu âm", "nội soi", "đo huyết áp", "đo đường huyết",
+          "tiêm", "tiêm phòng", "tiêm chủng", "tiêm vắc xin", "tiêm vaccine", "vắc xin", "vaccine", "chích ngừa",
+          "bệnh viện", "phòng khám", "bác sĩ", "bs", "lịch khám", "hẹn khám", "đặt lịch khám", "lấy kết quả", "lấy thuốc", "mua thuốc",
+          "vật lý trị liệu", "châm cứu", "bấm huyệt", "xông", "spa", "massage", "mát xa",
+          "tập thể dục", "tập gym", "gym", "tập yoga", "yoga", "chạy bộ", "đi bộ", "bơi", "đi bơi", "đạp xe", "tập luyện", "workout",
+          "ngủ", "đi ngủ", "ngủ trưa", "dậy", "thức dậy", "uống nước", "uống sữa", "cho bú", "hút sữa", "cân nặng",
+          "uong thuoc", "di kham", "kham benh", "tai kham", "tiem phong", "benh vien", "tap gym", "chay bo"
+        ],
+        "weak": ["uống", "tập", "khỏe", "khoẻ", "sức khỏe", "sức khoẻ", "đau", "ốm", "sốt"]
+      },
+      "exclude": ["thuốc lá"],
+      "examples": ["8h tối uống thuốc", "thứ 3 tái khám ở bệnh viện", "mai tiêm phòng cho con", "6h sáng chạy bộ"]
+    },
+
+    {
+      "id": "lien_lac",
+      "label": "Liên lạc",
+      "emoji": "📞",
+      "priority": 50,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": null,
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "gọi", "gọi điện", "gọi lại", "gọi cho", "gọi điện cho", "điện cho", "alo", "phone", "gọi video", "video call", "facetime",
+          "email", "e-mail", "mail", "gửi mail", "gửi email", "trả lời mail", "reply mail", "check mail", "đọc mail", "forward mail",
+          "nhắn", "nhắn tin", "nhắn cho", "nhắn lại", "tin nhắn", "sms", "inbox", "ib", "ping", "chat", "zalo", "nhắn zalo", "gọi zalo",
+          "messenger", "telegram", "slack", "teams chat",
+          "báo lại", "báo cho", "báo tin", "thông báo", "trả lời", "phản hồi", "reply", "feedback", "hồi âm",
+          "liên hệ", "liên lạc", "hỏi", "hỏi lại", "hỏi thăm", "follow up", "follow-up", "theo dõi",
+          "báo giá", "gửi báo giá", "chào giá", "xác nhận", "confirm", "đặt lịch hẹn",
+          "goi dien", "goi lai", "nhan tin", "lien he", "tra loi"
+        ],
+        "weak": ["báo", "gửi", "điện thoại", "đt", "sđt", "số điện thoại"]
+      },
+      "exclude": ["gọi món", "gọi đồ ăn", "gọi xe"],
+      "examples": ["9h sáng mai gọi cho khách", "mai email cho đối tác", "chiều nay nhắn zalo cho anh Nam", "thứ 2 báo giá cho khách"]
+    },
+
+    {
+      "id": "cong_viec",
+      "label": "Công việc",
+      "emoji": "💼",
+      "priority": 40,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": null,
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "làm việc", "xử lý", "xu ly", "triển khai", "trien khai", "cài đặt", "cài", "cấu hình", "deploy", "build",
+          "fix", "fix bug", "sửa lỗi", "test", "kiểm thử", "kiểm tra", "check", "rà lại", "đối soát", "đối chiếu", "kiểm kê",
+          "backup", "sao lưu", "nâng cấp", "cập nhật", "update", "bảo trì", "khởi động lại", "restart", "reboot", "tắt máy", "bật máy",
+          "trực", "trực ca", "ca trực", "trực đêm", "đi ca", "vào ca", "giao ca", "nhận ca", "chấm công", "chấm điểm", "chấm bài",
+          "công tác", "đi công tác", "khảo sát", "đi khảo sát", "lên site", "xuống site", "onsite", "hiện trường",
+          "giao hàng", "nhận hàng", "xuất hàng", "nhập hàng", "đặt hàng", "lên đơn", "chốt đơn", "ship hàng", "gửi hàng",
+          "in tài liệu", "photo", "scan", "đóng dấu", "lấy dấu", "xin chữ ký", "lấy chữ ký",
+          "xin nghỉ", "nghỉ phép", "xin phép", "xin off", "off", "wfh", "làm ở nhà", "tăng ca", "ot",
+          "đọc tài liệu", "nghiên cứu", "phân tích", "thiết kế", "lập trình", "code", "viết code", "viết", "dịch",
+          "học", "ôn", "ôn bài", "ôn thi", "thi", "đi thi", "làm bài", "bài tập", "học online", "khóa học", "khoá học", "lớp học", "đi học"
+        ],
+        "weak": ["làm", "dự án", "task", "ticket", "server", "hệ thống", "khách", "sếp", "công ty", "văn phòng", "xong"]
+      },
+      "exclude": [],
+      "examples": ["9h tối backup server", "thứ 7 trực ca đêm", "mai giao hàng cho khách", "tối nay ôn thi"]
+    },
+
+    {
+      "id": "ca_nhan",
+      "label": "Cá nhân / gia đình",
+      "emoji": "🏠",
+      "priority": 30,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": null,
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": {
+        "strong": [
+          "đón con", "đưa con", "đón bé", "đưa bé", "đón vợ", "đón chồng", "đón bố", "đón mẹ", "đón ông", "đón bà", "đưa đón",
+          "đi chợ", "đi siêu thị", "siêu thị", "mua đồ", "mua sắm", "mua sữa", "mua rau", "mua thức ăn", "đặt đồ", "đặt hàng online",
+          "nấu cơm", "nấu ăn", "nấu", "rửa bát", "giặt", "giặt đồ", "phơi đồ", "lau nhà", "dọn nhà", "dọn dẹp", "tưới cây", "tưới",
+          "đổ rác", "đổ xăng", "rửa xe", "sửa xe", "bảo dưỡng xe", "thay dầu", "thay nhớt", "đăng kiểm xe", "gửi xe", "lấy xe",
+          "cắt tóc", "làm tóc", "gội đầu", "làm nail", "làm móng",
+          "về quê", "về nhà", "đi chơi", "đi du lịch", "du lịch", "đặt vé", "mua vé", "check in", "check-in", "check out",
+          "ra sân bay", "đón sân bay", "bay", "chuyến bay", "ra ga", "lên tàu", "đi xe khách", "đặt phòng", "khách sạn",
+          "xem phim", "xem bóng đá", "xem bóng", "đá bóng", "đá banh", "cầu lông", "tennis", "pickleball", "đánh cầu",
+          "đọc sách", "trả sách", "mượn sách", "thư viện", "lấy hàng", "nhận bưu phẩm", "bưu điện", "lấy đồ", "lấy quần áo",
+          "đi đám", "thăm", "đi thăm", "thăm ông bà", "thăm bố mẹ", "thăm người ốm",
+          "tắt bếp", "tắt điện", "tắt nước", "bật điều hòa", "bật bình nóng lạnh", "cho chó ăn", "cho mèo ăn", "cho cá ăn",
+          "don con", "dua con", "di cho", "sieu thi", "do xang", "cat toc", "ve que"
+        ],
+        "weak": ["mua", "đón", "đưa", "đi", "lấy", "đổi", "thay", "sửa", "đặt", "con", "vợ", "chồng", "bố", "mẹ", "nhà"]
+      },
+      "exclude": [],
+      "examples": ["15h đón con", "tối nay mua sữa cho con", "mai đổ xăng", "thứ 7 cắt tóc"]
+    },
+
+    {
+      "id": "khac",
+      "label": "Khác",
+      "emoji": "📌",
+      "priority": 0,
+      "behavior": {
+        "alerts_before_minutes": [],
+        "alert_before_days": null,
+        "bare_hour_pm": null,
+        "suggest_repeat": null
+      },
+      "keywords": { "strong": [], "weak": [] },
+      "exclude": [],
+      "examples": []
+    }
+  ]
+}

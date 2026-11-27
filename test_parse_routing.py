@@ -130,12 +130,12 @@ ROUTING_CASES = [
     ("Họp lúc 9h T2, T4, T6 hàng tuần", None, "Rule", 0, 3),
     ("Họp lúc 9h T2, T4, T6", None, "Rule", 0, 9),
     ("Nộp BC lúc 17h ngày 5, 20 hàng tháng", None, "Rule", 0, 2),
-    ("Nộp BC lúc 17h ngày 5, 20", None, "Rule", 0, 2),
+    ("Nộp BC lúc 17h ngày 5, 20", None, "Rule", 0, 4),  # deadline: + nhắc trước 1 ngày mỗi lịch
     ("Kỷ niệm lúc 8h ngày 20/6, 25/7 hàng năm", None, "Rule", 0, 2),
-    ("Kỷ niệm lúc 8h ngày 20/6, 25/7", None, "Rule", 0, 2),
+    ("Kỷ niệm lúc 8h ngày 20/6, 25/7", None, "Rule", 0, 4),  # sự kiện: + nhắc trước 1 ngày
     ("Giỗ ông nội lúc 8h ngày 15/3 âm lịch hàng năm", None, "Rule", 0, 1),
     ("Cúng rằm tháng 7 lúc 9h âm lịch hàng năm", None, "Rule", 0, 1),
-    ("Mùng 1 tháng giêng 8h Chúc tết âm lịch", None, "Rule", 0, 1),
+    ("Mùng 1 tháng giêng 8h Chúc tết âm lịch", None, "Rule", 0, 2),
     ("Giỗ cụ lúc 8h ngày 10/2 âm lịch mỗi 1 năm", None, "Rule", 0, 1),
     ("14.00 Họp giao ban\nChuẩn bị số liệu ngày 20/11", None, "Rule", 0, 3),
 
@@ -144,14 +144,14 @@ ROUTING_CASES = [
     ("họp tổng kết 20 tháng 12 năm 2026 lúc 14h", None, "Dictionary", 0, 3),
     ("15 phút nữa gọi lại khách", None, "Dictionary", 0, 1),
     ("2 giờ chiều mai đi khám", None, "Dictionary", 0, 1),
-    ("10 người đi ăn tối mai", None, "Dictionary", 0, 1),
+    ("10 người đi ăn tối mai", None, "Dictionary", 0, 3),  # mời ăn buổi tối → 18:00 + nhắc 45/30 phút
     ("họp mỗi thứ 2 lúc 8h", None, "Dictionary", 0, 1),
     ("Backup dữ liệu 3 ngày 1 lần lúc 23h", None, "Dictionary", 0, 1),
     ("Tập gym t2 t4 t6 lúc 18h", None, "Dictionary", 0, 3),
     ("trực ca 20/11, 25/11 và 30/11 lúc 7h", None, "Dictionary", 0, 3),
     ("Họp với chị Mai lúc 9h", None, "Rule", 0, 3),
     # Câu chat tự nhiên: Dictionary phải giữ nguyên văn
-    ("việc này chuyển sang chiều mai 4h 30 cả nhóm lên phòng nhé", None, "Dictionary", 0, 1),
+    ("việc này chuyển sang chiều mai 4h 30 cả nhóm lên phòng nhé", None, "Dictionary", 0, 3),  # "lên phòng" → họp
     ("Mai e email cho đối tác nhé", None, "Dictionary", 0, 1),
     ("chiều nay khoảng 4h 30 cả nhóm hội ý tiếp, cố gắng rút ngắn thời gian còn 2h",
      None, "Dictionary", 0, 3),
@@ -159,10 +159,18 @@ ROUTING_CASES = [
 
     ("Họp giao ban lúc 9h mai", None, "Rule", 0, 3),
     ("Tập gym lúc 18h T2,T4,T6", None, "Rule", 0, 3),
-    ("Giỗ ông nội lúc 8h ngày 15/3 âm lịch", None, "Rule", 0, 1),
+    ("Giỗ ông nội lúc 8h ngày 15/3 âm lịch", None, "Rule", 0, 2),  # 1 lần → + nhắc trước 1 ngày
     ("mai 9h họp", None, "Dictionary", 0, 3),
     ("Họp chiều mai 3h", None, "Dictionary", 0, 3),
     ("gọi điện cho mẹ 30p nữa", None, "Dictionary", 0, 1),
+    # Intent: mời ăn nhắc trước 45/30 phút; deadline còn > 1 ngày nhắc trước 1 ngày; sức khoẻ chỉ đúng giờ
+    ("tối mai 7h mời đối tác ăn tối", None, "Dictionary", 0, 3),
+    ("trưa mai ctay ông ở quán làm chén nha", None, "Dictionary", 0, 3),  # chỉ ghi buổi trưa → vẫn nhắc 45/30 phút
+    ("tối mai mời đối tác ăn tối", None, "Dictionary", 0, 3),             # tối → 18:00 + nhắc 45/30 phút
+    ("thứ 6 tuần sau nộp báo cáo", None, "Dictionary", 0, 2),
+    ("chiều nay nộp báo cáo", None, "Dictionary", 0, 1),  # còn < 24h → chỉ đúng giờ
+    ("8h tối mai uống thuốc", None, "Dictionary", 0, 1),
+    ("ngày 20 tháng sau đóng tiền nhà", None, "Dictionary", 0, 2),
     # ----- cuộc họp: nhắc trước 15p, 5p và đúng giờ -----
     ("meeting với khách 10h sáng mai", None, "Dictionary", 0, 3),
     ("hội ý dự án 2 tiếng nữa", None, "Dictionary", 0, 3),
@@ -171,8 +179,8 @@ ROUTING_CASES = [
     ("Họp lúc chiều mai", None, "Rule", 0, 1),            # Rule tự đặt giờ, không có giờ cụ thể
     ("họp mỗi thứ 2 lúc 8h30", None, "Dictionary", 0, 1), # lặp lại → không nhắc trước
     ("Gọi cho khách lúc 9h mai", None, "Rule", 0, 1),     # không phải họp
-    ("Sinh nhật vợ 20/12", None, "Dictionary", 0, 1),
-    ("Trung thu mua bánh", None, "Dictionary", 0, 1),
+    ("Sinh nhật vợ 20/12", None, "Dictionary", 0, 2),
+    ("Trung thu mua bánh", None, "Dictionary", 0, 2),
     ("học tiếng anh thứ ba và thứ năm 20h", None, "Dictionary", 0, 2),
     ("đi chơi cuối tuần này", None, "Dictionary", 0, 1),
     (

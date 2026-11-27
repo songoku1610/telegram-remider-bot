@@ -600,20 +600,8 @@
   },
 
   "bare_hour_pm": {
-    "note": "Giờ trần 1 chữ số (5h, 5h30, 5 giờ) không kèm buổi, không chỉ định ngày khác hôm nay, không lặp: nếu giờ sáng đó hôm nay đã qua nhưng giờ chiều/tối tương ứng (+12) chưa tới → hiểu là giờ chiều/tối hôm nay (5h lúc 16:31 → 17:00 hôm nay), thay vì 5h sáng hôm sau. Áp dụng cho Rule và Dictionary. Câu là cuộc họp (meeting_keywords) dùng meeting_hours thay cho hours: họp 7h/8h/9h gửi lúc chiều → sáng hôm sau, không đặt họp tối muộn.",
-    "hours": [1, 9],
-    "meeting_hours": [1, 6]
-  },
-
-  "meeting_keywords": {
-    "note": "Câu có từ khoá này + có giờ cụ thể (không phải giờ tự đặt) + không lặp + dương lịch → coi là cuộc họp: bot tạo thêm nhắc trước 15 phút, trước 5 phút, ngoài lịch đúng giờ. Áp dụng cho Rule và Dictionary (LLM tự trả is_meeting).",
-    "keywords": [
-      "họp", "hop", "cuộc họp", "họp nhanh", "họp online", "họp trực tuyến", "meeting", "meet", "giao ban",
-      "hội ý", "hoi y", "hội thảo", "hội nghị", "tọa đàm", "bàn bạc", "thảo luận", "trao đổi",
-      "sync", "standup", "stand-up", "daily scrum", "brainstorm", "workshop", "webinar",
-      "phỏng vấn", "interview", "demo", "review", "call", "zoom", "teams", "google meet",
-      "gặp đối tác", "gặp khách", "gặp khách hàng", "gặp sếp", "làm việc với", "tiếp khách", "tiếp đoàn"
-    ]
+    "note": "Giờ trần 1 chữ số (5h, 5h30, 5 giờ) không kèm buổi, không chỉ định ngày khác hôm nay, không lặp: nếu giờ sáng đó hôm nay đã qua nhưng giờ chiều/tối tương ứng (+12) chưa tới → hiểu là giờ chiều/tối hôm nay (5h lúc 16:31 → 17:00 hôm nay), thay vì 5h sáng hôm sau. Áp dụng cho Rule và Dictionary. Intent có behavior.bare_hour_pm (intents.json) dùng khoảng riêng: họp [1, 6] (họp 7h/8h/9h gửi lúc chiều → sáng hôm sau), mời ăn [1, 9].",
+    "hours": [1, 9]
   },
 
   "intent_keywords": [
@@ -633,8 +621,16 @@
   ],
 
   "blockers": {
-    "note": "Câu khớp blocker thì bước từ điển trả None (để LLM quyết định có phải nhắc lịch không).",
+    "note": "Câu khớp blocker thì bước từ điển trả None (để LLM quyết định có phải nhắc lịch không). question_endings/statement_endings xét ở CUỐI câu, cho phép theo sau là trailing_particles ('mai họp không em', 'xong rồi anh ạ'). Các nhóm còn lại xét ở bất kỳ đâu.",
     "question_endings": ["không", "ko", "k", "hông", "hem", "chưa", "nhỉ", "hả", "hở", "à", "sao", "chứ", "đâu", "gì", "nào", "thế", "vậy"],
+    "statement_endings": ["rồi", "quá", "ghê", "mất rồi"],
+    "trailing_particles": ["em", "anh", "chị", "bạn", "ạ", "a", "nhé", "nha", "nhá", "ha", "hen", "sếp", "ông", "bà", "cô", "chú", "bác", "mày", "cậu", "các bạn", "mọi người", "ae", "anh em", "đấy", "đó", "thế", "vậy", "à"],
+    "not_reminder": ["không được", "không đi được", "không kịp", "không tham gia", "không dự", "không đến được", "không về được",
+                     "chưa được", "chưa kịp", "bận rồi", "đang bận", "bị bận", "bị hủy", "bị huỷ", "hủy rồi", "huỷ rồi", "hoãn rồi",
+                     "kinh khủng", "khủng khiếp", "quá trời", "quá đi", "ghê quá", "vãi", "chán quá", "mệt quá", "vui quá", "buồn quá",
+                     "tắc đường", "kẹt xe", "trời mưa", "trời nắng", "trời lạnh", "trời nóng", "mất điện", "mất mạng",
+                     "cảm ơn", "cám ơn", "thanks", "thank you",
+                     "vui vẻ", "an lành", "hạnh phúc", "happy", "merry", "chúc mừng năm mới", "năm mới vui"],
     "question_phrases": ["mấy giờ", "mấy h", "bao giờ", "khi nào", "lúc nào", "ngày nào", "thứ mấy", "bao lâu", "có không", "được không"],
     "past_markers": ["hôm qua", "hôm kia", "hôm trước", "hồi sáng", "hồi chiều", "hồi tối", "hồi nãy", "lúc nãy", "ban nãy", "vừa nãy",
                      "vừa rồi", "vừa xong", "tuần trước", "tháng trước", "năm ngoái", "năm trước", "đã", "xong rồi"],
